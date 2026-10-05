@@ -1,0 +1,56 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up build environment
+        run: |
+          # Installa dipendenze necessarie per il cross-compilation PS5
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+      
+      - name: Build binaries
+        run: |
+          cd payload
+          make release
+        env:
+          PS5_PAYLOAD_SDK: ${{ github.workspace }}/ps5-payload-sdk
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: poords4-binaries
+          path: payload/*.elf
+          retention-days: 5
+      
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: payload/*.elf
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Create Release from Master
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: payload/*.elf
+          tag_name: latest-${{ github.run_number }}
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
