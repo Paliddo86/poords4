@@ -68,7 +68,7 @@ jobs:
           echo "PATH=$PATH"
           command -v bash
           command -v make
-          /usr/bin/make release
+          /usr/bin/make -C payload release
 
       - name: List generated binaries
         run: |
