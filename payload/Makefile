@@ -13,8 +13,8 @@ endif
 
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
-# Use ps5-clang without .cmd extension (works on both Windows and Unix)
-CC := ps5-clang
+# Use prospero-clang (the correct PS5 compiler name)
+CC := prospero-clang
 STRIP := llvm-strip
 
 CFLAGS  += -D__PROSPERO__ -Wall -Wextra -Wshadow -Wunreachable-code \
