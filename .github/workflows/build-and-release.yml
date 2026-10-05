@@ -10,43 +10,52 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
-      
-      - name: Set up build environment
+
+      - name: Verify PS5 SDK is present
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential llvm netcat-traditional
-      
-      - name: Display SDK structure
+          set -euxo pipefail
+          test -d "${GITHUB_WORKSPACE}/ps5-sdk"
+          test -f "${GITHUB_WORKSPACE}/ps5-sdk/toolchain/prospero.mk"
+          echo "SDK root: ${GITHUB_WORKSPACE}/ps5-sdk"
+          ls -la "${GITHUB_WORKSPACE}/ps5-sdk"
+          ls -la "${GITHUB_WORKSPACE}/ps5-sdk/toolchain"
+
+      - name: Install make if needed
         run: |
-          echo "=== Checking PS5 SDK ==="
-          ls -la ps5-sdk/ || echo "SDK directory not found"
-          echo "=== Current directory ==="
-          pwd
-          echo "=== Payload directory ==="
-          ls -la payload/
-      
+          set -euxo pipefail
+          if ! command -v make >/dev/null 2>&1; then
+            choco install -y make --no-progress
+          fi
+          command -v make
+
       - name: Build binaries
         working-directory: ./payload
-        run: |
-          echo "Building PoorDS4 binaries..."
-          make release
         env:
           PS5_PAYLOAD_SDK: ${{ github.workspace }}/ps5-sdk
-      
+        run: |
+          set -euxo pipefail
+          echo "PS5_PAYLOAD_SDK=${PS5_PAYLOAD_SDK}"
+          ls -la "${PS5_PAYLOAD_SDK}"
+          ls -la "${PS5_PAYLOAD_SDK}/toolchain"
+          make release
+
       - name: List generated binaries
         run: |
-          echo "=== Generated ELF binaries ==="
-          ls -lh payload/*.elf 2>/dev/null || echo "No ELF files found"
-          find payload -name "*.elf" -type f
-      
+          set -euxo pipefail
+          ls -lh payload/*.elf 2>/dev/null || true
+          find payload -maxdepth 1 -name "*.elf" -type f -print
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -54,7 +63,7 @@ jobs:
           path: payload/*.elf
           retention-days: 5
           if-no-files-found: warn
-      
+
       - name: Create Release on Tag
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
@@ -69,7 +78,7 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Create pre-release on main push
         if: github.ref == 'refs/heads/main' && github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
