@@ -23,8 +23,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential make unzip wget curl git
-          command -v make
-          command -v git
+          make --version
+          gcc --version
 
       - name: Download PS5 SDK release
         run: |
@@ -60,7 +60,7 @@ jobs:
           PS5_PAYLOAD_SDK: ${{ github.workspace }}/ps5-sdk
           PATH: ${{ github.workspace }}/ps5-sdk/bin:$PATH
         run: |
-          make release
+          /usr/bin/make release
 
       - name: List generated binaries
         run: |
