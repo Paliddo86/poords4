@@ -65,15 +65,31 @@ jobs:
             exit 1
           fi
 
+      - name: Inspect SDK structure
+        run: |
+          set -euxo pipefail
+          echo "=== Full SDK structure ==="
+          find "$GITHUB_WORKSPACE/ps5-sdk" -type f -name "ps5-clang*" -o -name "*clang*" | head -20
+          echo "=== Toolchain directory ==="
+          ls -la "$GITHUB_WORKSPACE/ps5-sdk/toolchain" || true
+          echo "=== bin directories ==="
+          find "$GITHUB_WORKSPACE/ps5-sdk" -type d -name "bin" -o -name "tools"
+          echo "=== Checking for clang executables ==="
+          find "$GITHUB_WORKSPACE/ps5-sdk" -type f \( -name "ps5-clang" -o -name "clang" \) -print
+
       - name: Build binaries
         working-directory: ./payload
         env:
           PS5_PAYLOAD_SDK: ${{ github.workspace }}/ps5-sdk
+          PATH: ${{ github.workspace }}/ps5-sdk/bin:${{ github.workspace }}/ps5-sdk/toolchain/bin:$PATH
         run: |
           set -euxo pipefail
           echo "PS5_PAYLOAD_SDK=${PS5_PAYLOAD_SDK}"
-          ls -la "${PS5_PAYLOAD_SDK}"
-          ls -la "${PS5_PAYLOAD_SDK}/toolchain" || true
+          echo "PATH=${PATH}"
+          echo "=== Checking if ps5-clang exists ==="
+          which ps5-clang || find "${PS5_PAYLOAD_SDK}" -name "ps5-clang" -type f -print || echo "ps5-clang not found"
+          ls -la "${PS5_PAYLOAD_SDK}/toolchain"
+          echo "=== Starting build ==="
           make release
 
       - name: List generated binaries
