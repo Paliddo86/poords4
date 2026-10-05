@@ -21,21 +21,15 @@ jobs:
 
       - name: Install build tools
         run: |
-          set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y build-essential make unzip wget curl git file
+          sudo apt-get install -y build-essential make unzip wget curl git
           command -v make
           command -v git
-          command -v unzip
-          command -v file
 
       - name: Download PS5 SDK release
         run: |
-          set -euxo pipefail
-
           SDK_RELEASE_API="https://api.github.com/repos/ps5-payload-dev/sdk/releases/latest"
-          echo "Fetching latest PS5 SDK release metadata..."
-          SDK_ASSET_URL=$(curl -fsSL "$SDK_RELEASE_API" | python3 -c "import sys, json; data=json.load(sys.stdin); assets=data.get('assets', []); print(next((a['browser_download_url'] for a in assets if a.get('name','').endswith('.zip')), ''))")
+          SDK_ASSET_URL=$(curl -fsSL "$SDK_RELEASE_API" | python3 -c "import sys, json; data=json.load(sys.stdin); print(next((a['browser_download_url'] for a in data.get('assets', []) if a.get('name','').endswith('.zip')), ''))")
 
           if [ -z "$SDK_ASSET_URL" ]; then
             echo "Failed to determine PS5 SDK zip asset URL"
@@ -48,7 +42,6 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/ps5-sdk"
           unzip -q ps5-sdk.zip -d "$GITHUB_WORKSPACE"
 
-          # Some SDK zips contain one top-level folder; flatten it if necessary.
           FOUND_ROOT=$(find "$GITHUB_WORKSPACE" -maxdepth 2 -mindepth 1 -type d \( -name 'sdk' -o -name 'ps5-payload-sdk' \) | head -n 1 || true)
           if [ -n "$FOUND_ROOT" ] && [ "$FOUND_ROOT" != "$GITHUB_WORKSPACE/ps5-sdk" ]; then
             shopt -s dotglob
@@ -56,71 +49,22 @@ jobs:
             shopt -u dotglob
           fi
 
-          echo "=== SDK root ==="
-          ls -la "$GITHUB_WORKSPACE/ps5-sdk"
-
           if [ ! -f "$GITHUB_WORKSPACE/ps5-sdk/toolchain/prospero.mk" ]; then
             echo "ERROR: prospero.mk not found in extracted SDK"
-            find "$GITHUB_WORKSPACE" -path '*/toolchain/prospero.mk' -print
             exit 1
           fi
-
-      - name: Find compiler and set PATH
-        run: |
-          set -euxo pipefail
-
-          SDK_DIR="${GITHUB_WORKSPACE}/ps5-sdk"
-
-          echo "=== Searching for clang binaries inside SDK ==="
-          find "$SDK_DIR" -type f \( -iname "clang" -o -iname "prospero-clang" -o -iname "ps5-clang" \) -print
-
-          CLANG_BIN=$(find "$SDK_DIR" -type f \( -iname "clang" -o -iname "prospero-clang" -o -iname "ps5-clang" \) 2>/dev/null | head -n 1)
-          if [ -z "$CLANG_BIN" ]; then
-            echo "ERROR: no clang executable found inside SDK"
-            find "$SDK_DIR" -maxdepth 4 -print | head -200
-            exit 1
-          fi
-
-          echo "CLANG_BIN=$CLANG_BIN"
-          file "$CLANG_BIN"
-
-          CLANG_DIR=$(dirname "$CLANG_BIN")
-          echo "CLANG_DIR=$CLANG_DIR"
-
-          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
-          echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
-          echo "PATH=$CLANG_DIR:$PATH" >> "$GITHUB_ENV"
 
       - name: Build binaries
         working-directory: ./payload
         env:
           PS5_PAYLOAD_SDK: ${{ github.workspace }}/ps5-sdk
+          PATH: ${{ github.workspace }}/ps5-sdk/bin:$PATH
         run: |
-          set -euxo pipefail
-
-          export PATH="${CLANG_DIR:-${{ github.workspace }}/ps5-sdk}:$PATH"
-
-          echo "PS5_PAYLOAD_SDK=${PS5_PAYLOAD_SDK}"
-          echo "PATH=${PATH}"
-          echo "CLANG_BIN=${CLANG_BIN}"
-          which clang || true
-          which prospero-clang || true
-          which ps5-clang || true
-
-          if [ -z "${CLANG_BIN:-}" ]; then
-            echo "ERROR: CLANG_BIN was not exported"
-            exit 1
-          fi
-
-          echo "=== Starting build ==="
-          make CC="${CLANG_BIN}" release
+          make release
 
       - name: List generated binaries
         run: |
-          set -euxo pipefail
-          echo "=== Checking for ELF binaries ==="
-          ls -lh payload/*.elf 2>/dev/null || echo "No ELF files found in payload/"
-          find payload -maxdepth 1 -name "*.elf" -type f -print
+          find payload -maxdepth 1 -name "*.elf" -type f
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
