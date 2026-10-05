@@ -21,6 +21,11 @@ jobs:
 
       - name: Install build tools
         run: |
+          #!/bin/bash
+          set -euxo pipefail
+          ls -ld /bin /usr/bin /bin/bash /usr/bin/bash || true
+          command -v bash || true
+          bash --version || true
           sudo apt-get update
           sudo apt-get install -y build-essential make unzip wget curl git
           make --version
@@ -28,6 +33,8 @@ jobs:
 
       - name: Download PS5 SDK release
         run: |
+          #!/bin/bash
+          set -euxo pipefail
           SDK_RELEASE_API="https://api.github.com/repos/ps5-payload-dev/sdk/releases/latest"
           SDK_ASSET_URL=$(curl -fsSL "$SDK_RELEASE_API" | python3 -c "import sys, json; data=json.load(sys.stdin); print(next((a['browser_download_url'] for a in data.get('assets', []) if a.get('name','').endswith('.zip')), ''))")
 
@@ -60,10 +67,14 @@ jobs:
           PS5_PAYLOAD_SDK: ${{ github.workspace }}/ps5-sdk
           PATH: ${{ github.workspace }}/ps5-sdk/bin:$PATH
         run: |
+          #!/bin/bash
+          set -euxo pipefail
           /usr/bin/make release
 
       - name: List generated binaries
         run: |
+          #!/bin/bash
+          set -euxo pipefail
           find payload -maxdepth 1 -name "*.elf" -type f
 
       - name: Upload build artifacts
