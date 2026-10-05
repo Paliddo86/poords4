@@ -18,26 +18,28 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
 
-      - name: Verify PS5 SDK is present
-        run: |
-          set -euxo pipefail
-          test -d "${GITHUB_WORKSPACE}/ps5-sdk"
-          test -f "${GITHUB_WORKSPACE}/ps5-sdk/toolchain/prospero.mk"
-          echo "SDK root: ${GITHUB_WORKSPACE}/ps5-sdk"
-          ls -la "${GITHUB_WORKSPACE}/ps5-sdk"
-          ls -la "${GITHUB_WORKSPACE}/ps5-sdk/toolchain"
-
-      - name: Install make if needed
+      - name: Install build tools
         run: |
           set -euxo pipefail
           if ! command -v make >/dev/null 2>&1; then
             choco install -y make --no-progress
           fi
+          if ! command -v git >/dev/null 2>&1; then
+            choco install -y git --no-progress
+          fi
           command -v make
+          command -v git
+
+      - name: Download PS5 SDK
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://github.com/ps5-payload-dev/sdk.git "${GITHUB_WORKSPACE}/ps5-sdk"
+          test -d "${GITHUB_WORKSPACE}/ps5-sdk"
+          test -f "${GITHUB_WORKSPACE}/ps5-sdk/toolchain/prospero.mk"
+          echo "SDK root: ${GITHUB_WORKSPACE}/ps5-sdk"
+          ls -la "${GITHUB_WORKSPACE}/ps5-sdk"
+          ls -la "${GITHUB_WORKSPACE}/ps5-sdk/toolchain"
 
       - name: Build binaries
         working-directory: ./payload
@@ -62,7 +64,7 @@ jobs:
           name: poords4-binaries
           path: payload/*.elf
           retention-days: 5
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Create Release on Tag
         if: startsWith(github.ref, 'refs/tags/v')
