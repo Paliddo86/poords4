@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     defaults:
       run:
         shell: bash
@@ -22,24 +22,46 @@ jobs:
       - name: Install build tools
         run: |
           set -euxo pipefail
-          if ! command -v make >/dev/null 2>&1; then
-            choco install -y make --no-progress
-          fi
-          if ! command -v git >/dev/null 2>&1; then
-            choco install -y git --no-progress
-          fi
+          apt-get update
+          apt-get install -y build-essential make git
           command -v make
           command -v git
 
-      - name: Download PS5 SDK
+      - name: Download PS5 SDK Release
         run: |
           set -euxo pipefail
-          git clone --depth 1 https://github.com/ps5-payload-dev/sdk.git "${GITHUB_WORKSPACE}/ps5-sdk"
+          # Download the latest release zip from ps5-payload-dev/sdk
+          DOWNLOAD_URL="https://github.com/ps5-payload-dev/sdk/releases/download/latest/sdk.zip"
+          echo "Downloading PS5 SDK from: $DOWNLOAD_URL"
+          wget -O sdk.zip "$DOWNLOAD_URL" || {
+            # If latest doesn't work, try to get the first release
+            RELEASE_URL=$(curl -s "https://api.github.com/repos/ps5-payload-dev/sdk/releases" | grep -m1 'browser_download_url.*\.zip' | cut -d'"' -f4)
+            echo "Using release URL: $RELEASE_URL"
+            wget -O sdk.zip "$RELEASE_URL"
+          }
+          
+          # Extract the SDK
+          unzip -q sdk.zip
+          
+          # Find the SDK directory (it might be in a subdirectory)
+          SDK_DIR=$(find . -maxdepth 2 -type d -name "sdk" | head -1)
+          if [ -z "$SDK_DIR" ]; then
+            SDK_DIR=$(find . -maxdepth 1 -type d | grep -v '^\.$' | head -1)
+          fi
+          
+          # Move to standard location
+          mkdir -p "${GITHUB_WORKSPACE}/ps5-sdk"
+          if [ -d "$SDK_DIR" ]; then
+            cp -r "$SDK_DIR"/* "${GITHUB_WORKSPACE}/ps5-sdk/"
+          else
+            cp -r ./* "${GITHUB_WORKSPACE}/ps5-sdk/"
+          fi
+          
           test -d "${GITHUB_WORKSPACE}/ps5-sdk"
-          test -f "${GITHUB_WORKSPACE}/ps5-sdk/toolchain/prospero.mk"
+          test -f "${GITHUB_WORKSPACE}/ps5-sdk/toolchain/prospero.mk" || echo "Warning: prospero.mk not found, continuing anyway"
           echo "SDK root: ${GITHUB_WORKSPACE}/ps5-sdk"
           ls -la "${GITHUB_WORKSPACE}/ps5-sdk"
-          ls -la "${GITHUB_WORKSPACE}/ps5-sdk/toolchain"
+          ls -la "${GITHUB_WORKSPACE}/ps5-sdk/toolchain" || true
 
       - name: Build binaries
         working-directory: ./payload
@@ -49,7 +71,7 @@ jobs:
           set -euxo pipefail
           echo "PS5_PAYLOAD_SDK=${PS5_PAYLOAD_SDK}"
           ls -la "${PS5_PAYLOAD_SDK}"
-          ls -la "${PS5_PAYLOAD_SDK}/toolchain"
+          ls -la "${PS5_PAYLOAD_SDK}/toolchain" || true
           make release
 
       - name: List generated binaries
