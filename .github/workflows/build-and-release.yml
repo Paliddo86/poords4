@@ -15,25 +15,26 @@ jobs:
       run:
         shell: bash
 
+    env:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${{ github.workspace }}/ps5-sdk/bin
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install build tools
         run: |
-          #!/bin/bash
           set -euxo pipefail
-          ls -ld /bin /usr/bin /bin/bash /usr/bin/bash || true
-          command -v bash || true
-          bash --version || true
+          echo "PATH=$PATH"
+          command -v bash
+          bash --version
           sudo apt-get update
           sudo apt-get install -y build-essential make unzip wget curl git
+          command -v make
           make --version
-          gcc --version
 
       - name: Download PS5 SDK release
         run: |
-          #!/bin/bash
           set -euxo pipefail
           SDK_RELEASE_API="https://api.github.com/repos/ps5-payload-dev/sdk/releases/latest"
           SDK_ASSET_URL=$(curl -fsSL "$SDK_RELEASE_API" | python3 -c "import sys, json; data=json.load(sys.stdin); print(next((a['browser_download_url'] for a in data.get('assets', []) if a.get('name','').endswith('.zip')), ''))")
@@ -65,15 +66,16 @@ jobs:
         working-directory: ./payload
         env:
           PS5_PAYLOAD_SDK: ${{ github.workspace }}/ps5-sdk
-          PATH: ${{ github.workspace }}/ps5-sdk/bin:$PATH
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${{ github.workspace }}/ps5-sdk/bin
         run: |
-          #!/bin/bash
           set -euxo pipefail
+          echo "PATH=$PATH"
+          command -v bash
+          command -v make
           /usr/bin/make release
 
       - name: List generated binaries
         run: |
-          #!/bin/bash
           set -euxo pipefail
           find payload -maxdepth 1 -name "*.elf" -type f
 
