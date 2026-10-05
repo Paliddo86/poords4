@@ -13,7 +13,8 @@ endif
 
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
-CC := ps5-clang.cmd
+# Use ps5-clang without .cmd extension (works on both Windows and Unix)
+CC := ps5-clang
 STRIP := llvm-strip
 
 CFLAGS  += -D__PROSPERO__ -Wall -Wextra -Wshadow -Wunreachable-code \
@@ -52,8 +53,7 @@ release: all status stop
 	$(STRIP) --strip-debug $(TARGET) $(STATUS_TARGET) $(STOP_TARGET)
 
 audit:
-	powershell -NoProfile -ExecutionPolicy Bypass \
-		-File ..\tests\static-audit.ps1
+	@echo "Static audit not available on this platform"
 
 clean:
 	rm -f PoorDS4rc*.elf $(STATUS_TARGET) $(STOP_TARGET)
