@@ -22,46 +22,48 @@ jobs:
       - name: Install build tools
         run: |
           set -euxo pipefail
-          apt-get update
-          apt-get install -y build-essential make git
+          sudo apt-get update
+          sudo apt-get install -y build-essential make unzip wget curl git
           command -v make
           command -v git
+          command -v unzip
 
-      - name: Download PS5 SDK Release
+      - name: Download PS5 SDK release
         run: |
           set -euxo pipefail
-          # Download the latest release zip from ps5-payload-dev/sdk
-          DOWNLOAD_URL="https://github.com/ps5-payload-dev/sdk/releases/download/latest/sdk.zip"
-          echo "Downloading PS5 SDK from: $DOWNLOAD_URL"
-          wget -O sdk.zip "$DOWNLOAD_URL" || {
-            # If latest doesn't work, try to get the first release
-            RELEASE_URL=$(curl -s "https://api.github.com/repos/ps5-payload-dev/sdk/releases" | grep -m1 'browser_download_url.*\.zip' | cut -d'"' -f4)
-            echo "Using release URL: $RELEASE_URL"
-            wget -O sdk.zip "$RELEASE_URL"
-          }
-          
-          # Extract the SDK
-          unzip -q sdk.zip
-          
-          # Find the SDK directory (it might be in a subdirectory)
-          SDK_DIR=$(find . -maxdepth 2 -type d -name "sdk" | head -1)
-          if [ -z "$SDK_DIR" ]; then
-            SDK_DIR=$(find . -maxdepth 1 -type d | grep -v '^\.$' | head -1)
+
+          SDK_RELEASE_API="https://api.github.com/repos/ps5-payload-dev/sdk/releases/latest"
+          echo "Fetching latest PS5 SDK release metadata..."
+          SDK_ASSET_URL=$(curl -fsSL "$SDK_RELEASE_API" | python3 -c "import sys, json; data=json.load(sys.stdin); print(next((a['browser_download_url'] for a in data.get('assets', []) if a.get('name','').endswith('.zip')), ''))")
+
+          if [ -z "$SDK_ASSET_URL" ]; then
+            echo "Failed to determine PS5 SDK zip asset URL"
+            exit 1
           fi
-          
-          # Move to standard location
-          mkdir -p "${GITHUB_WORKSPACE}/ps5-sdk"
-          if [ -d "$SDK_DIR" ]; then
-            cp -r "$SDK_DIR"/* "${GITHUB_WORKSPACE}/ps5-sdk/"
-          else
-            cp -r ./* "${GITHUB_WORKSPACE}/ps5-sdk/"
+
+          echo "Downloading SDK from: $SDK_ASSET_URL"
+          wget -O ps5-sdk.zip "$SDK_ASSET_URL"
+
+          mkdir -p "$GITHUB_WORKSPACE/ps5-sdk"
+          unzip -q ps5-sdk.zip -d "$GITHUB_WORKSPACE"
+
+          # The SDK zip usually contains a single top-level directory.
+          # If it does, flatten it into $GITHUB_WORKSPACE/ps5-sdk.
+          FOUND_ROOT=$(find "$GITHUB_WORKSPACE" -maxdepth 2 -mindepth 1 -type d \( -name 'sdk' -o -name 'ps5-payload-sdk' \) | head -n 1 || true)
+          if [ -n "$FOUND_ROOT" ] && [ "$FOUND_ROOT" != "$GITHUB_WORKSPACE/ps5-sdk" ]; then
+            shopt -s dotglob
+            cp -a "$FOUND_ROOT"/. "$GITHUB_WORKSPACE/ps5-sdk/"
+            shopt -u dotglob
           fi
-          
-          test -d "${GITHUB_WORKSPACE}/ps5-sdk"
-          test -f "${GITHUB_WORKSPACE}/ps5-sdk/toolchain/prospero.mk" || echo "Warning: prospero.mk not found, continuing anyway"
-          echo "SDK root: ${GITHUB_WORKSPACE}/ps5-sdk"
-          ls -la "${GITHUB_WORKSPACE}/ps5-sdk"
-          ls -la "${GITHUB_WORKSPACE}/ps5-sdk/toolchain" || true
+
+          echo "SDK directory content:"
+          ls -la "$GITHUB_WORKSPACE/ps5-sdk"
+
+          if [ ! -f "$GITHUB_WORKSPACE/ps5-sdk/toolchain/prospero.mk" ]; then
+            echo "ERROR: prospero.mk not found in extracted SDK"
+            find "$GITHUB_WORKSPACE" -path '*/toolchain/prospero.mk' -print
+            exit 1
+          fi
 
       - name: Build binaries
         working-directory: ./payload
