@@ -15,9 +15,6 @@ jobs:
       run:
         shell: bash
 
-    env:
-      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${{ github.workspace }}/ps5-sdk/bin
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -63,12 +60,11 @@ jobs:
           fi
 
       - name: Build binaries
-        working-directory: ./payload
         env:
           PS5_PAYLOAD_SDK: ${{ github.workspace }}/ps5-sdk
-          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${{ github.workspace }}/ps5-sdk/bin
         run: |
           set -euxo pipefail
+          export PATH="${GITHUB_WORKSPACE}/ps5-sdk/bin:${PATH}"
           echo "PATH=$PATH"
           command -v bash
           command -v make
