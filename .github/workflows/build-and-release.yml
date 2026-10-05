@@ -6,26 +6,46 @@ on:
       - master
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
       
       - name: Set up build environment
         run: |
-          # Installa dipendenze necessarie per il cross-compilation PS5
           sudo apt-get update
-          sudo apt-get install -y build-essential
+          sudo apt-get install -y build-essential llvm netcat-traditional
+      
+      - name: Display SDK structure
+        run: |
+          echo "=== Checking PS5 SDK ==="
+          ls -la ps5-sdk/ || echo "SDK directory not found"
+          echo "=== Current directory ==="
+          pwd
+          echo "=== Payload directory ==="
+          ls -la payload/
       
       - name: Build binaries
+        working-directory: ./payload
         run: |
-          cd payload
+          echo "Building PoorDS4 binaries..."
           make release
         env:
-          PS5_PAYLOAD_SDK: ${{ github.workspace }}/ps5-payload-sdk
+          PS5_PAYLOAD_SDK: ${{ github.workspace }}/ps5-sdk
+      
+      - name: List generated binaries
+        run: |
+          echo "=== Generated ELF binaries ==="
+          ls -lh payload/*.elf 2>/dev/null || echo "No ELF files found"
+          find payload -name "*.elf" -type f
       
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -33,24 +53,35 @@ jobs:
           name: poords4-binaries
           path: payload/*.elf
           retention-days: 5
+          if-no-files-found: warn
       
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create Release on Tag
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
         with:
-          files: payload/*.elf
+          files: |
+            payload/PoorDS4rc*.elf
+            payload/PoorDS4exp.elf
+            payload/PoorDS4-status.elf
+            payload/PoorDS4-stop.elf
           draft: false
           prerelease: false
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Create Release from Master
-        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+      - name: Create pre-release on master push
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
-          files: payload/*.elf
-          tag_name: latest-${{ github.run_number }}
+          files: |
+            payload/PoorDS4rc*.elf
+            payload/PoorDS4exp.elf
+            payload/PoorDS4-status.elf
+            payload/PoorDS4-stop.elf
+          tag_name: latest-build-${{ github.run_number }}
           draft: false
           prerelease: true
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
