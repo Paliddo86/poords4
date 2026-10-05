@@ -65,38 +65,53 @@ jobs:
             exit 1
           fi
 
-      - name: Inspect SDK structure
+      - name: Inspect and setup toolchain
         run: |
           set -euxo pipefail
-          echo "=== Full SDK structure ==="
-          find "$GITHUB_WORKSPACE/ps5-sdk" -type f -name "ps5-clang*" -o -name "*clang*" | head -20
-          echo "=== Toolchain directory ==="
-          ls -la "$GITHUB_WORKSPACE/ps5-sdk/toolchain" || true
-          echo "=== bin directories ==="
-          find "$GITHUB_WORKSPACE/ps5-sdk" -type d -name "bin" -o -name "tools"
-          echo "=== Checking for clang executables ==="
-          find "$GITHUB_WORKSPACE/ps5-sdk" -type f \( -name "ps5-clang" -o -name "clang" \) -print
+          
+          SDK_DIR="${GITHUB_WORKSPACE}/ps5-sdk"
+          echo "=== SDK structure ==="
+          find "$SDK_DIR" -type f -name "*clang*" | head -20
+          
+          echo "=== Toolchain directory contents ==="
+          ls -la "$SDK_DIR/toolchain"
+          
+          echo "=== Finding prospero-clang ==="
+          CLANG_BIN=$(find "$SDK_DIR" -type f -name "prospero-clang" | head -n 1)
+          if [ -z "$CLANG_BIN" ]; then
+            echo "ERROR: prospero-clang not found"
+            exit 1
+          fi
+          echo "Found: $CLANG_BIN"
+          file "$CLANG_BIN"
+          
+          echo "=== Adding toolchain to PATH ==="
+          TOOLCHAIN_BIN=$(dirname "$CLANG_BIN")
+          echo "TOOLCHAIN_BIN=$TOOLCHAIN_BIN" >> $GITHUB_ENV
+          echo "PATH=$TOOLCHAIN_BIN:$PATH" >> $GITHUB_ENV
 
       - name: Build binaries
         working-directory: ./payload
         env:
           PS5_PAYLOAD_SDK: ${{ github.workspace }}/ps5-sdk
-          PATH: ${{ github.workspace }}/ps5-sdk/bin:${{ github.workspace }}/ps5-sdk/toolchain/bin:$PATH
         run: |
           set -euxo pipefail
           echo "PS5_PAYLOAD_SDK=${PS5_PAYLOAD_SDK}"
           echo "PATH=${PATH}"
-          echo "=== Checking if ps5-clang exists ==="
-          which ps5-clang || find "${PS5_PAYLOAD_SDK}" -name "ps5-clang" -type f -print || echo "ps5-clang not found"
-          ls -la "${PS5_PAYLOAD_SDK}/toolchain"
+          echo "TOOLCHAIN_BIN=${TOOLCHAIN_BIN}"
+          
+          echo "=== Verifying prospero-clang is in PATH ==="
+          which prospero-clang || (echo "prospero-clang not in PATH"; exit 1)
+          
           echo "=== Starting build ==="
           make release
 
       - name: List generated binaries
         run: |
           set -euxo pipefail
-          ls -lh payload/*.elf 2>/dev/null || true
-          find payload -maxdepth 1 -name "*.elf" -type f -print
+          echo "=== Checking for ELF binaries ==="
+          ls -lh payload/*.elf 2>/dev/null || echo "No ELF files found in payload/"
+          find payload -maxdepth 1 -name "*.elf" -type f
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
