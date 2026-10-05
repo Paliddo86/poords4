@@ -13,7 +13,7 @@ endif
 
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
-# Use prospero-clang (the correct PS5 compiler name)
+# Use prospero-clang from the SDK bin directory
 CC := prospero-clang
 STRIP := llvm-strip
 
