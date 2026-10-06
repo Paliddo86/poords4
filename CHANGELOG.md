@@ -3,6 +3,15 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc60] - 2026-09-30
+
+### Fixed
+
+- **Multi-Controller Slot Indexing (DualSense + DS4)**:
+  - `wireless_ds4_remote_reader_start` now maps every identified DS4 to its real `pad_index` (`multi_handles[pad_index]`) instead of the discovery order, so a native DualSense on `pad_index=0` is no longer collided with by a DS4 re-slotted to slot 0.
+  - Added a `multi_users[]` table and a `reader slot=%d user=... handle=...` diagnostic so each bridged slot can be traced back to its originating user and pad index.
+  - Unclaimed or out-of-range `pad_index` values leave `slot_handles[]` at `-1`, keeping the injected reader away from native DualSense slots.
+
 ## [0.1.0-rc51] - 2026-09-29
 
 ### Added

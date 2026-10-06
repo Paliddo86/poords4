@@ -2747,8 +2747,12 @@ wireless_ds4_remote_reader_start(
     int32_t selected_index = -1;
     int32_t selected_is_ds4 = 0;
     unsigned ds4_count = 0;
-    int32_t multi_handles[POORDS4_MAX_SLOTS] = {-1, -1, -1, -1};
-    int multi_opened[POORDS4_MAX_SLOTS] = {0, 0, 0, 0};
+    int32_t multi_handles[POORDS4_MAX_SLOTS];
+    int multi_opened[POORDS4_MAX_SLOTS];
+    int32_t multi_users[POORDS4_MAX_SLOTS];
+    memset(multi_handles, 0xff, sizeof(multi_handles));
+    memset(multi_opened, 0, sizeof(multi_opened));
+    memset(multi_users, 0xff, sizeof(multi_users));
     for (uint32_t user_slot = 0; user_slot < user_count; ++user_slot) {
         int32_t candidate_user = user_ids[user_slot];
         if (candidate_user < 0)
@@ -2907,9 +2911,11 @@ wireless_ds4_remote_reader_start(
              * path; the private 11.60 table remains a verified cross-check. */
             if (candidate_handle >= 0 &&
                 (public_identity || api_identity || table_identity)) {
-                if (ds4_count < POORDS4_MAX_SLOTS) {
-                    multi_handles[ds4_count] = candidate_handle;
-                    multi_opened[ds4_count] = opened_here;
+                if (pad_index >= 0 && pad_index < (int32_t)POORDS4_MAX_SLOTS &&
+                    multi_handles[pad_index] < 0) {
+                    multi_handles[pad_index] = candidate_handle;
+                    multi_opened[pad_index] = opened_here;
+                    multi_users[pad_index] = candidate_user;
                     if (ds4_count == 0) {
                         handle = candidate_handle;
                         selected_user = candidate_user;
@@ -2922,7 +2928,15 @@ wireless_ds4_remote_reader_start(
                             (api_identity ? "api" : "fw1160-id"));
                     }
                     ds4_count++;
+                    klog_printf(
+                        "[PoorDS4] reader slot=%d user=0x%08x "
+                        "handle=0x%08x\n",
+                        pad_index, (uint32_t)candidate_user,
+                        (uint32_t)candidate_handle);
                 } else if (opened_here) {
+                    /* Slot already claimed by another DS4, or pad_index is
+                     * out of range: close the freshly opened handle so it is
+                     * not leaked. */
                     (void)pt_call(
                         target, fn_closepad, trap_mem,
                         (uint32_t)candidate_handle,
@@ -3063,7 +3077,7 @@ wireless_ds4_remote_reader_start(
     args.close_pad_on_exit = selected_opened_here;
     args.owner_check_interval = 120;
     for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
-        args.slot_handles[s] = (s < ds4_count) ? multi_handles[s] : -1;
+        args.slot_handles[s] = multi_handles[s];
         args.slot_seqs[s] = 0;
         args.slot_results[s] = -1;
         memset(args.slot_data[s], 0, sizeof(args.slot_data[s]));
