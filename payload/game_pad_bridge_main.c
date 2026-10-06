@@ -989,17 +989,25 @@ static void
 feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
                             pid_t game_pid, intptr_t bridge_args,
                             uint64_t input_frames, unsigned primary_slot,
+                            int dualsense_slot,
                             const PoorDS4GameBridgeStatus *bridge_status,
                             const ScePadData *primary_pad)
 {
     static int s_prev_fed_mask = 0;
     int current_fed_mask = 0;
+    /* The primary_pad mirroring fallback was removed: every secondary slot is
+     * now fed only from its own reader data. These parameters are retained for
+     * signature stability but are no longer referenced here. */
+    (void)bridge_status;
+    (void)primary_pad;
     refresh_simulated_pads_config();
 
     uint64_t now_ms = monotonic_milliseconds();
     for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
         if (s == primary_slot)
             continue;
+        if (dualsense_slot >= 0 && (int)s == dualsense_slot)
+            continue; /* Never touch the native DualSense slot. */
         if (g_sim_mask & (1 << s)) {
             current_fed_mask |= (1 << s);
             ScePadData sim_pad;
@@ -1029,13 +1037,6 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
                 current_fed_mask |= (1 << s);
                 (void)wireless_ds4_game_bridge_update_slot(
                     game_pid, bridge_args, s, &physical_pad, sizeof(physical_pad),
-                    0 /* is_simulated */, 0 /* is_dualsense */);
-            } else if (bridge_status && bridge_status->slots[s].pad_handle > 0 &&
-                       bridge_status->slots[s].user_matches &&
-                       !bridge_status->slots[s].is_dualsense && primary_pad) {
-                current_fed_mask |= (1 << s);
-                (void)wireless_ds4_game_bridge_update_slot(
-                    game_pid, bridge_args, s, primary_pad, sizeof(*primary_pad),
                     0 /* is_simulated */, 0 /* is_dualsense */);
             } else if (s_prev_fed_mask & (1 << s)) {
                 (void)wireless_ds4_game_bridge_deactivate_slot(game_pid, bridge_args, s);
@@ -1088,13 +1089,51 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
     uint64_t session_start_ms = monotonic_milliseconds();
     g_bridge_args = bridge_args;
     PoorDS4GameBridgeStatus initial_status;
-    unsigned primary_slot = 0;
-    if (wireless_ds4_game_bridge_status(game_pid, bridge_args, &initial_status) == 0 &&
-        initial_status.game_pad_index >= 0 && initial_status.game_pad_index < (int32_t)POORDS4_MAX_SLOTS) {
-        primary_slot = (unsigned)initial_status.game_pad_index;
-    } else if (g_pad_source.pad_index >= 0 && g_pad_source.pad_index < (int32_t)POORDS4_MAX_SLOTS) {
-        primary_slot = (unsigned)g_pad_source.pad_index;
+    memset(&initial_status, 0, sizeof(initial_status));
+    int initial_status_ok =
+        wireless_ds4_game_bridge_status(game_pid, bridge_args, &initial_status) == 0;
+
+    /* Locate a native DualSense slot, if any, so it is never selected or fed. */
+    int dualsense_slot = -1;
+    if (initial_status_ok) {
+        for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
+            if (initial_status.slots[s].pad_handle > 0 &&
+                initial_status.slots[s].is_dualsense) {
+                dualsense_slot = (int)s;
+                break;
+            }
+        }
     }
+
+    /* The primary slot must be a DS4, never the native DualSense. */
+    unsigned primary_slot = 0;
+    int primary_found = 0;
+    if (initial_status_ok) {
+        for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
+            if ((int)s == dualsense_slot)
+                continue;
+            if (initial_status.slots[s].pad_handle > 0 &&
+                !initial_status.slots[s].is_dualsense) {
+                primary_slot = s;
+                primary_found = 1;
+                break;
+            }
+        }
+    }
+    if (!primary_found) {
+        if (initial_status.game_pad_index >= 0 &&
+            initial_status.game_pad_index < (int32_t)POORDS4_MAX_SLOTS &&
+            (int)initial_status.game_pad_index != dualsense_slot) {
+            primary_slot = (unsigned)initial_status.game_pad_index;
+        } else if (g_pad_source.pad_index >= 0 &&
+                   g_pad_source.pad_index < (int32_t)POORDS4_MAX_SLOTS &&
+                   g_pad_source.pad_index != dualsense_slot) {
+            primary_slot = (unsigned)g_pad_source.pad_index;
+        }
+    }
+    poords4_log(
+        "[PoorDS4] primary_slot=%u dualsense_slot=%d game_pad_index=%d\n",
+        primary_slot, dualsense_slot, initial_status.game_pad_index);
     last_bridge_status = initial_status;
     write_supervisor_state(
         "active", game_pid, session, previous_output_frames, 1);
@@ -1311,6 +1350,7 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
                 feed_multi_controller_slots(
                     reader_pid, reader_args,
                     game_pid, bridge_args, input_frames, primary_slot,
+                    dualsense_slot,
                     &last_bridge_status, &pad);
                 last_seq = seq;
             } else {

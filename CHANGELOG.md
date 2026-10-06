@@ -3,6 +3,15 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc62] - 2026-09-30
+
+### Fixed
+
+- **Native DualSense Excluded from the Supervisor**:
+  - `run_game_session` now detects the native DualSense slot from the bridge status and picks the primary slot strictly among non-DualSense DS4 slots, falling back to `game_pad_index`/`g_pad_source` only when it differs from the DualSense slot. `initial_status` is zero-initialised before the status probe.
+  - `feed_multi_controller_slots` gained a `dualsense_slot` argument and skips it, so the superseded slot is never overwritten (native passthrough remains authoritative for the DualSense).
+  - Removed the `primary_pad` mirroring fallback in `feed_multi_controller_slots`: secondary slots are now fed exclusively from their own reader data, so DS4 #2/#3 no longer replay DS4 #1's input.
+
 ## [0.1.0-rc61] - 2026-09-30
 
 ### Fixed
