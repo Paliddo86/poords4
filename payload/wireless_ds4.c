@@ -1060,6 +1060,17 @@ game_bridge_copy_direct_slot(GamePadBridgeArgs *args, unsigned slot, void *out,
         source_slot = 0;
     }
 
+    /* If the source slot never published a frame, there is nothing to copy.
+     * Returning 0 lets the caller keep the native passthrough instead of
+     * overwriting it with empty data. */
+    if (source_slot == 0 && args->slots[0].direct_packets == 0 &&
+        args->direct_packets == 0) {
+        return 0;
+    }
+    if (source_slot > 0 && args->slots[source_slot].direct_packets == 0) {
+        return 0;
+    }
+
     volatile uint32_t *p_seq = (source_slot == 0 && args->slots[0].direct_packets == 0)
         ? &args->direct_seq : &args->slots[source_slot].direct_seq;
     volatile uint32_t *p_active = (source_slot == 0 && args->slots[0].direct_packets == 0)
@@ -1383,7 +1394,12 @@ game_pad_read_state_stub(int32_t handle, void *out,
                 final_result = 0;
                 direct_copied = 1;
             } else {
-                if (native_connected) {
+                /* The reader has no data for this slot. Always use the native
+                 * passthrough, even when native_connected is true, so the
+                 * native buffer is never overwritten with empty data. */
+                final_result = native_called ? native_result :
+                    (original ? original(handle, out, 0) : native_result);
+                if (final_result == 0 && native_connected) {
                     (void)__atomic_fetch_add(
                         &args->native_passthrough_frames, 1, __ATOMIC_RELAXED);
                     (void)__atomic_fetch_add(
@@ -1391,8 +1407,6 @@ game_pad_read_state_stub(int32_t handle, void *out,
                     (void)__atomic_fetch_add(
                         &args->slots[slot].native_passthrough_frames, 1, __ATOMIC_RELAXED);
                 }
-                final_result = native_called ? native_result :
-                    (original ? original(handle, out, 0) : native_result);
             }
         } else {
             final_result = native_called ? native_result :
@@ -1505,7 +1519,13 @@ game_pad_read_state_ext_stub(int32_t handle, void *out,
                 final_result = 0;
                 direct_copied = 1;
             } else {
-                if (native_connected) {
+                /* The reader has no data for this slot. Always use the native
+                 * passthrough, even when native_connected is true, so the
+                 * native buffer is never overwritten with empty data. */
+                final_result = native_called ? native_result :
+                    (original_ext ? original_ext(handle, out) :
+                     (fallback_internal ? fallback_internal(handle, out, 1) : native_result));
+                if (final_result == 0 && native_connected) {
                     (void)__atomic_fetch_add(
                         &args->native_passthrough_frames, 1, __ATOMIC_RELAXED);
                     (void)__atomic_fetch_add(
@@ -1513,9 +1533,6 @@ game_pad_read_state_ext_stub(int32_t handle, void *out,
                     (void)__atomic_fetch_add(
                         &args->slots[slot].native_passthrough_frames, 1, __ATOMIC_RELAXED);
                 }
-                final_result = native_called ? native_result :
-                    (original_ext ? original_ext(handle, out) :
-                     (fallback_internal ? fallback_internal(handle, out, 1) : native_result));
             }
         } else {
             final_result = native_called ? native_result :
@@ -1628,7 +1645,12 @@ game_pad_read_stub(int32_t handle, void *out, int32_t num,
                     final_result = 1;
                     direct_copied = 1;
                 } else {
-                    if (native_connected) {
+                    /* The reader has no data for this slot. Always use the
+                     * native passthrough so the native buffer is never
+                     * overwritten with empty data. */
+                    final_result = native_called ? native_result :
+                        (original ? original(handle, out, num, 0) : native_result);
+                    if (final_result > 0 && native_connected) {
                         (void)__atomic_fetch_add(
                             &args->native_passthrough_frames, 1, __ATOMIC_RELAXED);
                         (void)__atomic_fetch_add(
@@ -1636,8 +1658,6 @@ game_pad_read_stub(int32_t handle, void *out, int32_t num,
                         (void)__atomic_fetch_add(
                             &args->slots[slot].native_passthrough_frames, 1, __ATOMIC_RELAXED);
                     }
-                    final_result = native_called ? native_result :
-                        (original ? original(handle, out, num, 0) : native_result);
                 }
             }
         } else {
@@ -1777,7 +1797,13 @@ game_pad_read_ext_stub(int32_t handle, void *out, int32_t num,
                     final_result = 1;
                     direct_copied = 1;
                 } else {
-                    if (native_connected) {
+                    /* The reader has no data for this slot. Always use the
+                     * native passthrough so the native buffer is never
+                     * overwritten with empty data. */
+                    final_result = native_called ? native_result :
+                        (original_ext ? original_ext(handle, out, num) :
+                         (fallback_internal ? fallback_internal(handle, out, num, 1) : native_result));
+                    if (final_result > 0 && native_connected) {
                         (void)__atomic_fetch_add(
                             &args->native_passthrough_frames, 1, __ATOMIC_RELAXED);
                         (void)__atomic_fetch_add(
@@ -1785,9 +1811,6 @@ game_pad_read_ext_stub(int32_t handle, void *out, int32_t num,
                         (void)__atomic_fetch_add(
                             &args->slots[slot].native_passthrough_frames, 1, __ATOMIC_RELAXED);
                     }
-                    final_result = native_called ? native_result :
-                        (original_ext ? original_ext(handle, out, num) :
-                         (fallback_internal ? fallback_internal(handle, out, num, 1) : native_result));
                 }
             }
         } else {
@@ -1901,7 +1924,12 @@ game_pad_get_data_internal_stub(int32_t handle, void *out,
                 final_result = 0;
                 direct_copied = 1;
             } else {
-                if (native_connected) {
+                /* The reader has no data for this slot. Always use the native
+                 * passthrough, even when native_connected is true, so the
+                 * native buffer is never overwritten with empty data. */
+                final_result = native_called ? native_result :
+                    (original ? original(handle, out, 1) : native_result);
+                if (final_result == 0 && native_connected) {
                     (void)__atomic_fetch_add(
                         &args->native_passthrough_frames, 1, __ATOMIC_RELAXED);
                     (void)__atomic_fetch_add(
@@ -1909,8 +1937,6 @@ game_pad_get_data_internal_stub(int32_t handle, void *out,
                     (void)__atomic_fetch_add(
                         &args->slots[slot].native_passthrough_frames, 1, __ATOMIC_RELAXED);
                 }
-                final_result = native_called ? native_result :
-                    (original ? original(handle, out, 1) : native_result);
             }
         } else {
             final_result = native_called ? native_result :

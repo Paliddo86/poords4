@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc61] - 2026-09-30
+
+### Fixed
+
+- **Empty-Frame Overwrite Protection (native passthrough)**:
+  - `game_bridge_copy_direct_slot` now returns 0 when the source slot has never published a frame, so the bridge leaves the native buffer untouched instead of overwriting it with empty data.
+  - Every direct-bridge stub (`game_pad_read_state_stub`, `game_pad_read_state_ext_stub`, `game_pad_read_stub`, `game_pad_read_ext_stub`, `game_pad_get_data_internal_stub`) now evaluates the native result first and only accounts a native passthrough frame when the native call actually produced a connected frame, keeping Sony's passthrough authoritative for slots with no reader data (e.g. a native DualSense).
+
 ## [0.1.0-rc60] - 2026-09-30
 
 ### Fixed
