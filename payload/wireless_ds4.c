@@ -2779,6 +2779,7 @@ wireless_ds4_remote_reader_start(
     memset(multi_handles, 0xff, sizeof(multi_handles));
     memset(multi_opened, 0, sizeof(multi_opened));
     memset(multi_users, 0xff, sizeof(multi_users));
+    int32_t pad_ordinal = 0;
     for (uint32_t user_slot = 0; user_slot < user_count; ++user_slot) {
         int32_t candidate_user = user_ids[user_slot];
         if (candidate_user < 0)
@@ -2930,6 +2931,14 @@ wireless_ds4_remote_reader_start(
                     klog_printf("%02x", device_info[byte]);
             }
             klog_printf("\n");
+            /* Each real pad (a DS4 or a native DualSense) consumes one global
+             * slot, so the reader slot index matches the game bridge slot
+             * index (the game assigns one sequential index per pad). The
+             * DualSense keeps its slot at -1: it is never stored and never
+             * read, while the DS4s land on the same indices the game uses. */
+            int32_t slot = -1;
+            if (candidate_handle >= 0)
+                slot = pad_ordinal++;
             /* A connected ScePadData sample proves that a handle is live, not
              * that it belongs to a DS4. RC22 treated every live 12.40 handle
              * as a DS4, so a DualSense connected first won enumeration. Only
@@ -2937,11 +2946,11 @@ wireless_ds4_remote_reader_start(
              * path; the private 11.60 table remains a verified cross-check. */
             if (candidate_handle >= 0 &&
                 (public_identity || api_identity || table_identity)) {
-                if (pad_index >= 0 && pad_index < (int32_t)POORDS4_MAX_SLOTS &&
-                    multi_handles[pad_index] < 0) {
-                    multi_handles[pad_index] = candidate_handle;
-                    multi_opened[pad_index] = opened_here;
-                    multi_users[pad_index] = candidate_user;
+                if (slot >= 0 && slot < (int32_t)POORDS4_MAX_SLOTS &&
+                    multi_handles[slot] < 0) {
+                    multi_handles[slot] = candidate_handle;
+                    multi_opened[slot] = opened_here;
+                    multi_users[slot] = candidate_user;
                     if (ds4_count == 0) {
                         handle = candidate_handle;
                         selected_user = candidate_user;
@@ -2957,10 +2966,10 @@ wireless_ds4_remote_reader_start(
                     klog_printf(
                         "[PoorDS4] reader slot=%d user=0x%08x "
                         "handle=0x%08x\n",
-                        pad_index, (uint32_t)candidate_user,
+                        slot, (uint32_t)candidate_user,
                         (uint32_t)candidate_handle);
                 } else if (opened_here) {
-                    /* Slot already claimed by another DS4, or pad_index is
+                    /* Slot already claimed by another pad, or the ordinal is
                      * out of range: close the freshly opened handle so it is
                      * not leaked. */
                     (void)pt_call(

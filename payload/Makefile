@@ -1,6 +1,6 @@
 PS5_HOST ?=
 PORT     ?= 9021
-RC_VERSION := 63
+RC_VERSION := 64
 
 TARGET        := PoorDS4rc$(RC_VERSION).elf
 EXP_TARGET    := PoorDS4exp.elf

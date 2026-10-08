@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc64] - 2026-09-30
+
+### Fixed
+
+- **Reader Slot Indexing Across Users (multi-DS4)**:
+  - `wireless_ds4_remote_reader_start` now assigns each physical pad a **global slot ordinal** (counting every real pad, including the native DualSense, which keeps its slot at `-1`) instead of the per-user `pad_index`. Two DS4s bound to different users no longer collide on slot 0, so the second DS4 is no longer opened and immediately closed.
+  - This aligns the reader slot index with the game bridge slot index, so `feed_multi_controller_slots` feeds each game slot from its own DS4. Fixes "only the first DS4 works" with 1 DualSense + 2/3 DS4 connected on separate user profiles.
+
 ## [0.1.0-rc63] - 2026-09-30
 
 ### Fixed
