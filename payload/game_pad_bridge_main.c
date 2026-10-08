@@ -624,7 +624,8 @@ game_session_end_reason_name(GameSessionEndReason reason)
 }
 
 static uint32_t
-collect_user_candidates(int32_t user_ids[POORDS4_MAX_USER_CANDIDATES]);
+collect_user_candidates(int32_t user_ids[POORDS4_MAX_USER_CANDIDATES],
+                        int32_t user_numbers[POORDS4_MAX_USER_CANDIDATES]);
 
 static inline int
 is_reset_combo_held(uint32_t buttons, uint8_t l2, uint8_t r2)
@@ -1301,7 +1302,7 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
                         int32_t current_users[POORDS4_MAX_USER_CANDIDATES];
                         memset(current_users, 0xff, sizeof(current_users));
                         uint32_t current_user_count =
-                            collect_user_candidates(current_users);
+                            collect_user_candidates(current_users, NULL);
                         int found_other_user = 0;
                         for (uint32_t u = 0; u < current_user_count; ++u) {
                             if (current_users[u] >= 0 &&
@@ -1608,20 +1609,39 @@ wait_for_game_exit_or_stop(pid_t game_pid, const char *state,
 }
 
 static void
-add_user_candidate(int32_t user_id, int32_t *user_ids, uint32_t *count)
+add_user_candidate(int32_t user_id, int32_t user_number, int32_t *user_ids,
+                   int32_t *user_numbers, uint32_t *count)
 {
     if (user_id < 0 || !user_ids || !count ||
         *count >= POORDS4_MAX_USER_CANDIDATES)
         return;
     for (uint32_t index = 0; index < *count; ++index) {
-        if (user_ids[index] == user_id)
+        if (user_ids[index] == user_id) {
+            if (user_numbers && user_number > 0 &&
+                user_numbers[index] <= 0)
+                user_numbers[index] = user_number;
             return;
+        }
     }
-    user_ids[(*count)++] = user_id;
+    user_ids[*count] = user_id;
+    if (user_numbers)
+        user_numbers[*count] = user_number;
+    (*count)++;
+}
+
+static int32_t
+login_user_number(const int32_t *login_users, int32_t user_id)
+{
+    for (unsigned index = 0; index < 4; ++index) {
+        if (user_id >= 0 && login_users[index] == user_id)
+            return (int32_t)(index + 1);
+    }
+    return -1;
 }
 
 static uint32_t
-collect_user_candidates(int32_t user_ids[POORDS4_MAX_USER_CANDIDATES])
+collect_user_candidates(int32_t user_ids[POORDS4_MAX_USER_CANDIDATES],
+                        int32_t user_numbers[POORDS4_MAX_USER_CANDIDATES])
 {
     int32_t initial_user = -1;
     int32_t foreground_user = -1;
@@ -1630,10 +1650,15 @@ collect_user_candidates(int32_t user_ids[POORDS4_MAX_USER_CANDIDATES])
     (void)sceUserServiceGetForegroundUser(&foreground_user);
     (void)sceUserServiceGetInitialUser(&initial_user);
     (void)sceUserServiceGetLoginUserIdList(login_users);
-    add_user_candidate(foreground_user, user_ids, &count);
+    add_user_candidate(
+        foreground_user, login_user_number(login_users, foreground_user),
+        user_ids, user_numbers, &count);
     for (unsigned index = 0; index < 4; ++index)
-        add_user_candidate(login_users[index], user_ids, &count);
-    add_user_candidate(initial_user, user_ids, &count);
+        add_user_candidate(login_users[index], (int32_t)(index + 1),
+                           user_ids, user_numbers, &count);
+    add_user_candidate(
+        initial_user, login_user_number(login_users, initial_user),
+        user_ids, user_numbers, &count);
     return count;
 }
 
@@ -1648,10 +1673,18 @@ start_wireless_reader(PoorDS4PadSource *source, pid_t *reader_pid,
         if (lifecycle_should_stop())
             return -1;
         int32_t user_ids[POORDS4_MAX_USER_CANDIDATES];
+        int32_t user_numbers[POORDS4_MAX_USER_CANDIDATES];
         memset(user_ids, 0xff, sizeof(user_ids));
-        uint32_t user_count = collect_user_candidates(user_ids);
+        memset(user_numbers, 0xff, sizeof(user_numbers));
+        uint32_t user_count =
+            collect_user_candidates(user_ids, user_numbers);
+        {
+            int32_t foreground_user = -1;
+            (void)sceUserServiceGetForegroundUser(&foreground_user);
+            wireless_ds4_set_foreground_user(foreground_user);
+        }
         if (wireless_ds4_remote_reader_start(
-                user_ids, user_count, source,
+                user_ids, user_numbers, user_count, source,
                 reader_pid, reader_args) == 0) {
             g_reader_pid = *reader_pid;
             g_reader_args = *reader_args;
@@ -1740,14 +1773,17 @@ recover_wireless_reader_in_place(
         if (last_attempt_ms == 0 || now == 0 ||
             now >= last_attempt_ms + UINT64_C(250)) {
             int32_t users[POORDS4_MAX_USER_CANDIDATES];
+            int32_t user_numbers[POORDS4_MAX_USER_CANDIDATES];
             memset(users, 0xff, sizeof(users));
-            uint32_t user_count = collect_user_candidates(users);
+            memset(user_numbers, 0xff, sizeof(user_numbers));
+            uint32_t user_count =
+                collect_user_candidates(users, user_numbers);
             PoorDS4PadSource candidate = {-1, -1, -1, 0};
             pid_t candidate_pid = -1;
             intptr_t candidate_args = 0;
             attempts++;
             if (wireless_ds4_remote_reader_start(
-                    users, user_count, &candidate,
+                    users, user_numbers, user_count, &candidate,
                     &candidate_pid, &candidate_args) == 0) {
                 int user_changed = (old_user_id >= 0 &&
                     (candidate.user_id != old_user_id ||

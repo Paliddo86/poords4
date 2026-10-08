@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc67] - 2026-09-30
+
+### Fixed
+
+- **Per-User libScePad Binding for Multiple DS4 on Different Profiles**:
+  - The injected RemotePlay client only reads the libScePad user context it is bound to (`scePadSetLoginUserNumber`). Until now it was bound once to a hard-coded value, so with controllers on different user profiles only one DS4 was ever readable and the others reported `connected=0`.
+  - `collect_user_candidates` now also reports each candidate's login user number, which the supervisor passes to `wireless_ds4_remote_reader_start`. The reader **rebinds the client to each user's context before probing that user's pads** (`reader bind user=... number=... result=...`), leaving it bound to the primary DS4's user afterwards.
+  - `RemotePadReaderArgs` gained `fp_setlogin` and `slot_login_numbers[POORDS4_MAX_SLOTS]`; the reader thread rebinds to each slot's user before every per-slot read, so secondary DS4s on other profiles stay readable at runtime.
+
+## [0.1.0-rc66] - 2026-09-30
+
+### Added
+
+- **Active (Foreground) User Priority for the Primary DS4**:
+  - Added the exported `wireless_ds4_set_foreground_user(int32_t)` and a `g_foreground_user` variable in `wireless_ds4.c`. The supervisor calls it with `sceUserServiceGetForegroundUser()` before starting the reader.
+  - After discovery, `wireless_ds4_remote_reader_start` prefers the DS4 bound to the foreground user as the primary source (`source match foreground user=... slot=...`), so the player who is actually interacting owns the bridged controller.
+
 ## [0.1.0-rc65] - 2026-09-30
 
 ### Fixed

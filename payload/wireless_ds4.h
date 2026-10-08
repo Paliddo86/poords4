@@ -14,7 +14,8 @@ typedef struct {
 } PoorDS4PadSource;
 
 int wireless_ds4_remote_reader_start(
-    const int32_t *user_ids, uint32_t user_count,
+    const int32_t *user_ids, const int32_t *user_numbers,
+    uint32_t user_count,
     PoorDS4PadSource *out_source, pid_t *out_pid,
     intptr_t *out_args_address);
 int wireless_ds4_remote_reader_read(pid_t pid, intptr_t args_address,
@@ -25,6 +26,10 @@ int wireless_ds4_remote_reader_read_slot(pid_t pid, intptr_t args_address,
                                         void *pad_data, uint32_t pad_data_len,
                                         uint32_t *out_seq);
 int wireless_ds4_remote_reader_stop(pid_t pid, intptr_t args_address);
+
+/* Selects the currently active (foreground) user whose DS4 should become the
+ * primary bridged controller. Pass -1 when there is no active user. */
+void wireless_ds4_set_foreground_user(int32_t user_id);
 
 typedef struct {
     int32_t ready;
