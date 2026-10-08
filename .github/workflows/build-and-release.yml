@@ -84,9 +84,29 @@ jobs:
           retention-days: 5
           if-no-files-found: error
 
+      - name: Classify release channel
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: channel
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          prerelease=false
+          make_latest=true
+          # A semver pre-release identifier (e.g. v0.1.0-rc64) publishes a
+          # GitHub prerelease and must never become the repository "latest".
+          case "$tag" in
+            *-rc*|*-RC*|*-alpha*|*-beta*|*-pre*|*-dev*|*-snapshot*|*-nightly*|*-canary*)
+              prerelease=true
+              make_latest=false
+              ;;
+          esac
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+          echo "make_latest=${make_latest}" >> "$GITHUB_OUTPUT"
+          echo "release tag=${tag} prerelease=${prerelease} make_latest=${make_latest}"
+
       - name: Create Release on Tag
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             payload/PoorDS4rc*.elf
@@ -94,7 +114,8 @@ jobs:
             payload/PoorDS4-status.elf
             payload/PoorDS4-stop.elf
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.channel.outputs.prerelease }}
+          make_latest: ${{ steps.channel.outputs.make_latest }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
