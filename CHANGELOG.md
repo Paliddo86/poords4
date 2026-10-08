@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc65] - 2026-09-30
+
+### Fixed
+
+- **Primary Slot Matched to the Selected DS4**:
+  - `run_game_session` now picks `primary_slot` from the selected DS4 slot (`game_pad_index`) instead of the first non-DualSense slot. The previous heuristic could pick a lower slot that belongs to a different (idle/empty) user, writing the active DS4's input into the wrong game slot (observed: `game_pad_index=2` but `primary_slot=1`). The DualSense slot is still always excluded, with the source pad index and the first non-DualSense slot as fallbacks.
+
 ## [0.1.0-rc64] - 2026-09-30
 
 ### Fixed

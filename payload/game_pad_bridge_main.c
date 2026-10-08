@@ -1105,30 +1105,35 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
         }
     }
 
-    /* The primary slot must be a DS4, never the native DualSense. */
+    /* The primary slot is the game slot of the selected DS4 handle
+     * (game_pad_index). It must never be the native DualSense: if that slot is
+     * the DualSense, or game_pad_index is unusable, fall back to the source pad
+     * index and finally to the first non-DualSense slot. */
     unsigned primary_slot = 0;
     int primary_found = 0;
-    if (initial_status_ok) {
+    if (initial_status_ok &&
+        initial_status.game_pad_index >= 0 &&
+        initial_status.game_pad_index < (int32_t)POORDS4_MAX_SLOTS &&
+        (int)initial_status.game_pad_index != dualsense_slot) {
+        primary_slot = (unsigned)initial_status.game_pad_index;
+        primary_found = 1;
+    }
+    if (!primary_found &&
+        g_pad_source.pad_index >= 0 &&
+        g_pad_source.pad_index < (int32_t)POORDS4_MAX_SLOTS &&
+        g_pad_source.pad_index != dualsense_slot) {
+        primary_slot = (unsigned)g_pad_source.pad_index;
+        primary_found = 1;
+    }
+    if (!primary_found && initial_status_ok) {
         for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
             if ((int)s == dualsense_slot)
                 continue;
             if (initial_status.slots[s].pad_handle > 0 &&
                 !initial_status.slots[s].is_dualsense) {
                 primary_slot = s;
-                primary_found = 1;
                 break;
             }
-        }
-    }
-    if (!primary_found) {
-        if (initial_status.game_pad_index >= 0 &&
-            initial_status.game_pad_index < (int32_t)POORDS4_MAX_SLOTS &&
-            (int)initial_status.game_pad_index != dualsense_slot) {
-            primary_slot = (unsigned)initial_status.game_pad_index;
-        } else if (g_pad_source.pad_index >= 0 &&
-                   g_pad_source.pad_index < (int32_t)POORDS4_MAX_SLOTS &&
-                   g_pad_source.pad_index != dualsense_slot) {
-            primary_slot = (unsigned)g_pad_source.pad_index;
         }
     }
     poords4_log(
