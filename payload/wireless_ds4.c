@@ -592,11 +592,16 @@ typedef struct {
     volatile uint32_t slot_seqs[POORDS4_MAX_SLOTS];
     volatile int32_t slot_results[POORDS4_MAX_SLOTS];
     uint8_t slot_data[POORDS4_MAX_SLOTS][POORDS4_REMOTE_PAD_CAPACITY];
+    /* The RemotePlay libScePad client only reads the user context it is bound
+     * to via scePadSetLoginUserNumber. Each reader slot carries the login user
+     * number of its controller so the reader can rebind before each read. */
+    intptr_t fp_setlogin;
+    int32_t slot_login_numbers[POORDS4_MAX_SLOTS];
 } RemotePadReaderArgs;
 
 _Static_assert(sizeof(ScePadData) == 120,
                "ScePadData ABI changed");
-_Static_assert(sizeof(RemotePadReaderArgs) == 1440,
+_Static_assert(sizeof(RemotePadReaderArgs) == 1464,
                "RemotePadReaderArgs ABI changed");
 
 extern void *remote_pad_reader_stub(void *arg);
@@ -617,6 +622,7 @@ remote_pad_reader_stub(void *arg)
     typedef void (*usleep_fn_t)(unsigned int);
     typedef int32_t (*kill_fn_t)(int32_t, int32_t);
     typedef int32_t (*close_pad_fn_t)(int32_t);
+    typedef int32_t (*setlogin_fn_t)(int32_t);
     read_fn_t readstate = (read_fn_t)(uintptr_t)a->fp_readstate;
     read_events_fn_t read_events =
         (read_events_fn_t)(uintptr_t)a->fp_read;
@@ -624,6 +630,8 @@ remote_pad_reader_stub(void *arg)
     kill_fn_t check_owner = (kill_fn_t)(uintptr_t)a->fp_kill;
     close_pad_fn_t close_pad =
         (close_pad_fn_t)(uintptr_t)a->fp_closepad;
+    setlogin_fn_t setlogin_user =
+        (setlogin_fn_t)(uintptr_t)a->fp_setlogin;
     uint32_t owner_countdown = a->owner_check_interval;
 
     __atomic_store_n(&a->ready, 1, __ATOMIC_RELEASE);
@@ -633,6 +641,8 @@ remote_pad_reader_stub(void *arg)
         __atomic_store_n(&a->seq, odd, __ATOMIC_RELEASE);
         int32_t result = -1;
         int32_t queued_result = -1;
+        if (setlogin_user && a->slot_login_numbers[0] > 0)
+            (void)setlogin_user(a->slot_login_numbers[0]);
         if (read_events) {
             queued_result = read_events(
                 a->pad_handle, a->pad_data, 1);
@@ -700,6 +710,8 @@ remote_pad_reader_stub(void *arg)
         for (unsigned s = 1; s < POORDS4_MAX_SLOTS; ++s) {
             int32_t sh = a->slot_handles[s];
             if (sh > 0) {
+                if (setlogin_user && a->slot_login_numbers[s] > 0)
+                    (void)setlogin_user(a->slot_login_numbers[s]);
                 uint32_t s_odd =
                     (__atomic_load_n(&a->slot_seqs[s], __ATOMIC_RELAXED) + 1u) | 1u;
                 __atomic_store_n(&a->slot_seqs[s], s_odd, __ATOMIC_RELEASE);
@@ -2465,14 +2477,23 @@ report_source_function_fingerprint(int fd, pid_t pid, intptr_t base,
         ? poords4_fnv1a64(code, sizeof(code)) : 0;
 }
 
+static int32_t g_foreground_user = -1;
+
+void
+wireless_ds4_set_foreground_user(int32_t user_id)
+{
+    g_foreground_user = user_id;
+}
+
 int
 wireless_ds4_remote_reader_start(
-    const int32_t *user_ids, uint32_t user_count,
+    const int32_t *user_ids, const int32_t *user_numbers,
+    uint32_t user_count,
     PoorDS4PadSource *out_source, pid_t *out_pid,
     intptr_t *out_args_kaddr)
 {
 #if !defined(__PROSPERO__)
-    (void)user_ids; (void)user_count; (void)out_source;
+    (void)user_ids; (void)user_numbers; (void)user_count; (void)out_source;
     (void)out_pid; (void)out_args_kaddr;
     return -1;
 #else
@@ -2771,19 +2792,36 @@ wireless_ds4_remote_reader_start(
     int32_t handle = -1;
     int32_t selected_user = -1;
     int32_t selected_index = -1;
+    int32_t selected_number = -1;
     int32_t selected_is_ds4 = 0;
     unsigned ds4_count = 0;
     int32_t multi_handles[POORDS4_MAX_SLOTS];
     int multi_opened[POORDS4_MAX_SLOTS];
     int32_t multi_users[POORDS4_MAX_SLOTS];
+    int32_t multi_numbers[POORDS4_MAX_SLOTS];
     memset(multi_handles, 0xff, sizeof(multi_handles));
     memset(multi_opened, 0, sizeof(multi_opened));
     memset(multi_users, 0xff, sizeof(multi_users));
+    memset(multi_numbers, 0xff, sizeof(multi_numbers));
     int32_t pad_ordinal = 0;
     for (uint32_t user_slot = 0; user_slot < user_count; ++user_slot) {
         int32_t candidate_user = user_ids[user_slot];
         if (candidate_user < 0)
             continue;
+        int32_t candidate_number =
+            user_numbers ? user_numbers[user_slot] : -1;
+        /* Bind the libScePad client to this user's context before probing, so
+         * controllers of other logged-in users become readable too. */
+        if (candidate_number > 0 && fn_setloginuser) {
+            int64_t bind_result = pt_call(
+                target, fn_setloginuser, trap_mem,
+                (uint32_t)candidate_number, 0, 0, 0, 0, 0);
+            klog_printf(
+                "[PoorDS4] reader bind user=0x%08x number=%d "
+                "result=0x%llx\n",
+                (uint32_t)candidate_user, candidate_number,
+                (unsigned long long)(uint64_t)bind_result);
+        }
         for (int32_t pad_index = 0; pad_index < 8; ++pad_index) {
             int32_t candidate_handle = (int32_t)pt_call(
                 target, fn_gethandle, trap_mem,
@@ -2951,12 +2989,14 @@ wireless_ds4_remote_reader_start(
                     multi_handles[slot] = candidate_handle;
                     multi_opened[slot] = opened_here;
                     multi_users[slot] = candidate_user;
+                    multi_numbers[slot] = candidate_number;
                     if (ds4_count == 0) {
                         handle = candidate_handle;
                         selected_user = candidate_user;
                         selected_index = pad_index;
                         selected_is_ds4 = 1;
                         selected_opened_here = opened_here;
+                        selected_number = candidate_number;
                         klog_printf(
                             "[PoorDS4] source match method=%s\n",
                             public_identity ? "public-device-info" :
@@ -2985,6 +3025,30 @@ wireless_ds4_remote_reader_start(
                     (uint32_t)candidate_handle, 0, 0, 0, 0, 0);
             }
         }
+    }
+    /* Prefer the DS4 of the currently active (foreground) user, so the player
+     * who is actually interacting owns the bridged primary source. */
+    if (g_foreground_user >= 0) {
+        for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
+            if (multi_users[s] == g_foreground_user && multi_handles[s] > 0) {
+                handle = multi_handles[s];
+                selected_user = g_foreground_user;
+                selected_index = (int32_t)s;
+                selected_is_ds4 = 1;
+                selected_opened_here = multi_opened[s];
+                selected_number = multi_numbers[s];
+                klog_printf(
+                    "[PoorDS4] source match foreground user=0x%08x slot=%u\n",
+                    (uint32_t)g_foreground_user, s);
+                break;
+            }
+        }
+    }
+    /* Leave the client bound to the primary DS4's user so the main pad read
+     * works; the reader thread rebinds per slot while polling. */
+    if (selected_number > 0 && fn_setloginuser) {
+        (void)pt_call(target, fn_setloginuser, trap_mem,
+                      (uint32_t)selected_number, 0, 0, 0, 0, 0);
     }
     uint8_t source_controller_probe[32];
     memset(source_controller_probe, 0xa5, sizeof(source_controller_probe));
@@ -3113,10 +3177,14 @@ wireless_ds4_remote_reader_start(
     args.owner_check_interval = 120;
     for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
         args.slot_handles[s] = multi_handles[s];
+        args.slot_login_numbers[s] = multi_numbers[s];
         args.slot_seqs[s] = 0;
         args.slot_results[s] = -1;
         memset(args.slot_data[s], 0, sizeof(args.slot_data[s]));
     }
+    args.fp_setlogin = fn_setloginuser;
+    /* The reader thread treats a->pad_handle as slot 0 (the primary pad). */
+    args.slot_login_numbers[0] = selected_number;
     if (pt_io_write(target, args_addr, &args, sizeof(args)) != 0)
         goto cleanup;
 
