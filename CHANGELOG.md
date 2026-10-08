@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc63] - 2026-09-30
+
+### Fixed
+
+- **DS4/DualSense `inferred_index` Collisions**:
+  - `game_bridge_select_pad_handle` now only fills an empty slot on first claim and handles collisions explicitly: a DualSense overrides a DS4 on the same `inferred_index` (`dualsense_overrides_ds4`), a DS4 colliding with a native DualSense is rejected (`ds4_rejected_dualsense_wins`), and any other case is logged as `ambiguous`. Every collision emits a `pad_slot_collision` report line.
+  - `wireless_ds4_game_bridge_run_passive` no longer forces `is_dualsense = 0` on a slot owned by a DualSense: when the primary DS4 slot coincides with a DualSense slot the DS4 is relocated to a free slot (`ds4_slot_relocated`), or the bridge is abandoned (`error=no_free_slot_for_ds4`) instead of breaking the DualSense passthrough.
+
 ## [0.1.0-rc62] - 2026-09-30
 
 ### Fixed

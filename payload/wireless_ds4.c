@@ -4820,12 +4820,50 @@ game_bridge_select_pad_handle(
             inferred_index, connected, valid, vendor, product, is_ds4);
 
         if (out_slot_handles && inferred_index >= 0 && inferred_index < (int32_t)POORDS4_MAX_SLOTS) {
-            if (out_slot_handles[inferred_index] <= 0 || is_active_dualsense) {
+            if (out_slot_handles[inferred_index] <= 0) {
                 out_slot_handles[inferred_index] = handle;
                 if (out_slot_dualsense)
                     out_slot_dualsense[inferred_index] = is_active_dualsense ? 1u : 0u;
                 if (out_slot_user_matches)
                     out_slot_user_matches[inferred_index] = matches_user ? 1u : 0u;
+            } else if (is_active_dualsense &&
+                       out_slot_dualsense &&
+                       !out_slot_dualsense[inferred_index]) {
+                /* Collision: a DS4 already occupied this slot and a DualSense
+                 * with the same inferred_index now arrives. The DualSense wins
+                 * on native passthrough. */
+                report_printf(
+                    report_fd,
+                    "pad_slot_collision index=%d old_handle=0x%08x "
+                    "new_handle=0x%08x type=dualsense_overrides_ds4\n",
+                    inferred_index,
+                    (uint32_t)out_slot_handles[inferred_index],
+                    (uint32_t)handle);
+                out_slot_handles[inferred_index] = handle;
+                out_slot_dualsense[inferred_index] = 1u;
+                if (out_slot_user_matches)
+                    out_slot_user_matches[inferred_index] = matches_user ? 1u : 0u;
+            } else if (!is_active_dualsense &&
+                       out_slot_dualsense &&
+                       out_slot_dualsense[inferred_index]) {
+                /* Inverse collision: a DualSense already occupied this slot and
+                 * a DS4 with the same inferred_index now arrives. The DualSense
+                 * has priority (native); the DS4 is rejected. */
+                report_printf(
+                    report_fd,
+                    "pad_slot_collision index=%d old_handle=0x%08x "
+                    "new_handle=0x%08x type=ds4_rejected_dualsense_wins\n",
+                    inferred_index,
+                    (uint32_t)out_slot_handles[inferred_index],
+                    (uint32_t)handle);
+            } else {
+                report_printf(
+                    report_fd,
+                    "pad_slot_collision index=%d old_handle=0x%08x "
+                    "new_handle=0x%08x type=ambiguous\n",
+                    inferred_index,
+                    (uint32_t)out_slot_handles[inferred_index],
+                    (uint32_t)handle);
             }
         }
 
@@ -5462,6 +5500,34 @@ wireless_ds4_game_bridge_run_passive(
     }
     unsigned ds4_slot = (game_pad_index >= 0 && game_pad_index < (int32_t)POORDS4_MAX_SLOTS)
         ? (unsigned)game_pad_index : 0u;
+
+    /* If the DS4 slot coincides with a DualSense slot, the DS4 must be mapped
+     * elsewhere or rejected. We must never force is_dualsense = 0 on a slot
+     * that belongs to a native DualSense. */
+    if (slot_dualsense[ds4_slot]) {
+        unsigned free_slot = POORDS4_MAX_SLOTS;
+        for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
+            if (s == ds4_slot)
+                continue;
+            if (!slot_dualsense[s] && slot_handles[s] <= 0) {
+                free_slot = s;
+                break;
+            }
+        }
+        if (free_slot < POORDS4_MAX_SLOTS) {
+            report_printf(
+                report_fd,
+                "ds4_slot_relocated from=%u to=%u dualsense_present=%u\n",
+                ds4_slot, free_slot, slot_dualsense[ds4_slot]);
+            ds4_slot = free_slot;
+        } else {
+            report_printf(
+                report_fd,
+                "error=no_free_slot_for_ds4 dualsense_slot=%u\n", ds4_slot);
+            goto done;
+        }
+    }
+
     for (unsigned i = 0; i < POORDS4_MAX_SLOTS; ++i) {
         if (slot_handles[i] > 0) {
             args.slots[i].pad_handle = slot_handles[i];
