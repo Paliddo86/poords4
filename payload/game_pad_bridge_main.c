@@ -21,6 +21,7 @@
 
 #include "pad_types.h"
 #include "wireless_ds4.h"
+#include "assets/poor_ds4_icon.h"
 
 typedef struct app_info {
     uint32_t app_id;
@@ -37,6 +38,8 @@ extern int sceKernelGetAppInfo(pid_t pid, app_info_t *info);
 #define GAME_BRIDGE_LOG_BACKUP POORDS4_DATA_DIR "/game-pad-bridge.log.1"
 #define GAME_BRIDGE_LOCK_FILE  POORDS4_DATA_DIR "/game-pad-bridge-supervisor.lock"
 #define GAME_BRIDGE_STATE_FILE POORDS4_DATA_DIR "/game-pad-bridge-supervisor.txt"
+#define GAME_BRIDGE_ICON_FILE  POORDS4_DATA_DIR "/icon.png"
+#define GAME_BRIDGE_ICON_PROBE_FILE POORDS4_DATA_DIR "/icon-probe"
 #define GAME_BRIDGE_LAUNCH_GRACE_MS UINT64_C(1500)
 #define SOURCE_DISCONNECT_GRACE_MS  UINT64_C(1500)
 #define SOURCE_REDISCOVERY_MS       UINT64_C(2500)
@@ -588,6 +591,42 @@ poords4_log(const char *format, ...)
     }
 }
 
+/* The notification service loads the toast icon by path, so the embedded
+ * PoorDS4 icon is materialised in the runtime data directory. A file that is
+ * already there is left untouched, so the icon can be replaced without
+ * rebuilding the payload. Returns the path, or NULL when it could not be
+ * installed (the toast then uses the SDK sample icon). */
+static const char *
+game_bridge_icon_path(void)
+{
+    mkdir(POORDS4_DATA_DIR, 0755);
+    int fd = open(GAME_BRIDGE_ICON_FILE, O_RDONLY);
+    if (fd >= 0) {
+        close(fd);
+        return GAME_BRIDGE_ICON_FILE;
+    }
+    fd = open(GAME_BRIDGE_ICON_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+        return NULL;
+    size_t written = 0;
+    while (written < POORDS4_ICON_PNG_SIZE) {
+        ssize_t chunk = write(
+            fd, g_poor_ds4_icon_png + written,
+            POORDS4_ICON_PNG_SIZE - written);
+        if (chunk <= 0)
+            break;
+        written += (size_t)chunk;
+    }
+    close(fd);
+    if (written != POORDS4_ICON_PNG_SIZE) {
+        (void)unlink(GAME_BRIDGE_ICON_FILE);
+        return NULL;
+    }
+    poords4_log("[PoorDS4] toast icon installed at %s (%u bytes)\n",
+                GAME_BRIDGE_ICON_FILE, (unsigned)POORDS4_ICON_PNG_SIZE);
+    return GAME_BRIDGE_ICON_FILE;
+}
+
 static void
 game_bridge_notify_kernel(const char *message)
 {
@@ -606,28 +645,57 @@ game_bridge_notify_kernel(const char *message)
  * for its own messages (icon, title, body) instead of the plain kernel
  * notification above. Keeps every character that would break the JSON payload
  * out of the body, and falls back to the kernel notification when the native
- * call is rejected. */
+ * call is rejected.
+ *
+ * The icon is a parameter: the embedded PoorDS4 icon when it could be
+ * installed in the runtime data directory, the SDK sample icon otherwise. */
+#define POORDS4_NOTIFY_ICON_PREDEFINED(name) \
+    "{\"type\":\"Predefined\",\"parameters\":{\"icon\":\"" name "\"}}"
+#define POORDS4_NOTIFY_ICON_URL \
+    "{\"type\":\"Url\",\"parameters\":{\"url\":\"" GAME_BRIDGE_ICON_FILE "\"}}"
+
 #define POORDS4_NOTIFY_TEMPLATE_HEAD \
     "{\"rawData\":{\"viewTemplateType\":\"InteractiveToastTemplateB\"," \
     "\"channelType\":\"Downloads\",\"useCaseId\":\"IDC\"," \
     "\"toastOverwriteType\":\"No\",\"isImmediate\":true,\"priority\":100," \
-    "\"viewData\":{" \
-    "\"icon\":{\"type\":\"Predefined\",\"parameters\":{\"icon\":\"download\"}}," \
-    "\"message\":{\"body\":\""
+    "\"viewData\":{\"icon\":"
 
-#define POORDS4_NOTIFY_TEMPLATE_TAIL \
+#define POORDS4_NOTIFY_TEMPLATE_MID \
+    ",\"message\":{\"body\":\""
+
+#define POORDS4_NOTIFY_TEMPLATE_SUB \
     "\"},\"subMessage\":{\"body\":\"PoorDS4\"}}," \
-    "\"platformViews\":{\"previewDisabled\":{\"viewData\":{" \
-    "\"icon\":{\"type\":\"Predefined\",\"parameters\":{\"icon\":\"download\"}}," \
-    "\"message\":{\"body\":\""
+    "\"platformViews\":{\"previewDisabled\":{\"viewData\":{\"icon\":"
+
+#define POORDS4_NOTIFY_TEMPLATE_BODY \
+    ",\"message\":{\"body\":\""
+
+#define POORDS4_NOTIFY_TEMPLATE_END \
+    "\"}}}}},\"createdDateTime\":\"2026-01-01T00:00:00.000Z\"," \
+    "\"localNotificationId\":\"%u\"}"
+
+/* Icon of the toast, resolved once on the first notification. */
+static const char *
+game_bridge_notify_icon(void)
+{
+    static const char *icon;
+    static int resolved;
+    if (!resolved) {
+        resolved = 1;
+        icon = game_bridge_icon_path() ?
+            POORDS4_NOTIFY_ICON_URL :
+            POORDS4_NOTIFY_ICON_PREDEFINED("download");
+    }
+    return icon;
+}
 
 static int
-game_bridge_notify_native(const char *message)
+game_bridge_notify_native_with_icon(const char *message, const char *icon)
 {
     static unsigned notify_serial;
     char body[192];
     char payload[1024];
-    if (!message)
+    if (!message || !icon)
         return 0;
     size_t index = 0;
     for (; message[index] != 0 && index + 1u < sizeof(body); ++index) {
@@ -642,10 +710,11 @@ game_bridge_notify_native(const char *message)
     int length = snprintf(
         payload, sizeof(payload),
         POORDS4_NOTIFY_TEMPLATE_HEAD "%s"
-        POORDS4_NOTIFY_TEMPLATE_TAIL "%s"
-        "\"}}}}},\"createdDateTime\":\"2026-01-01T00:00:00.000Z\","
-        "\"localNotificationId\":\"%u\"}",
-        body, body, 900000u + notify_serial);
+        POORDS4_NOTIFY_TEMPLATE_MID "%s"
+        POORDS4_NOTIFY_TEMPLATE_SUB "%s"
+        POORDS4_NOTIFY_TEMPLATE_BODY "%s"
+        POORDS4_NOTIFY_TEMPLATE_END,
+        icon, body, icon, body, 900000u + notify_serial);
     if (length <= 0 || (size_t)length >= sizeof(payload))
         return 0;
     int result = sceNotificationSend(0xfe /* system */, 1, payload);
@@ -661,6 +730,13 @@ game_bridge_notify_native(const char *message)
     return result == 0 ? 1 : 0;
 }
 
+static int
+game_bridge_notify_native(const char *message)
+{
+    return game_bridge_notify_native_with_icon(
+        message, game_bridge_notify_icon());
+}
+
 /* Sends the message as a native system toast when possible, falling back to the
  * kernel notification otherwise. */
 static void
@@ -669,6 +745,45 @@ game_bridge_notify(const char *message)
     if (game_bridge_notify_native(message))
         return;
     game_bridge_notify_kernel(message);
+}
+
+/* One-shot icon diagnostic: sends one toast per icon variant so the rendering
+ * can be judged on the console. Triggered by creating
+ * GAME_BRIDGE_ICON_PROBE_FILE, which is consumed. */
+static void
+game_bridge_icon_probe(void)
+{
+    static const char *const labels[] = {
+        "custom PoorDS4 icon",
+        "predefined download",
+        "predefined game",
+    };
+    static const char *const icons[] = {
+        POORDS4_NOTIFY_ICON_URL,
+        POORDS4_NOTIFY_ICON_PREDEFINED("download"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("game"),
+    };
+    const unsigned total = (unsigned)(sizeof(icons) / sizeof(icons[0]));
+    for (unsigned index = 0; index < total; ++index) {
+        char message[96];
+        snprintf(message, sizeof(message),
+                 "PoorDS4 icon test %u/%u: %s", index + 1u, total,
+                 labels[index]);
+        if (!game_bridge_notify_native_with_icon(message, icons[index])) {
+            poords4_log(
+                "[PoorDS4] icon probe %u/%u rejected\n",
+                index + 1u, total);
+        }
+    }
+}
+
+static void
+game_bridge_icon_probe_poll(void)
+{
+    if (unlink(GAME_BRIDGE_ICON_PROBE_FILE) != 0)
+        return;
+    poords4_log("[PoorDS4] icon probe requested\n");
+    game_bridge_icon_probe();
 }
 
 /* Reports how many wireless DS4 the reader detected and associated with a
@@ -2049,6 +2164,7 @@ main(void)
         if (lifecycle_should_stop())
             break;
         wireless_ds4_log_verbose_poll();
+        game_bridge_icon_probe_poll();
 
         /* Never modify a newly launched game while the source reader is
          * absent. A reader can be lost during Bluetooth re-publication at the

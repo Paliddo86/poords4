@@ -15,6 +15,8 @@ $bridge = [IO.File]::ReadAllText(
     (Join-Path $repo 'payload/wireless_ds4.c'))
 $makefile = [IO.File]::ReadAllText(
     (Join-Path $repo 'payload/Makefile'))
+$iconHeader = [IO.File]::ReadAllText(
+    (Join-Path $repo 'payload/assets/poor_ds4_icon.h'))
 
 Assert-True ($makefile.Contains('RC_VERSION := 77')) `
     'Makefile RC version is not 77.'
@@ -70,6 +72,30 @@ $verbosePolls = ([regex]::Matches($main,
     [regex]::Escape('wireless_ds4_log_verbose_poll();'))).Count
 Assert-True ($verbosePolls -ge 3) `
     'Verbose log switch is not polled from the supervisor loops.'
+
+Assert-True ($main.Contains('#include "assets/poor_ds4_icon.h"')) `
+    'Bridge does not embed the PoorDS4 toast icon.'
+Assert-True ($main.Contains('game_bridge_icon_path(void)') `
+    -and $main.Contains('GAME_BRIDGE_ICON_FILE  POORDS4_DATA_DIR "/icon.png"')) `
+    'Toast icon is not installed in the runtime data directory.'
+Assert-True ($main.Contains('POORDS4_NOTIFY_ICON_URL') `
+    -and $main.Contains('POORDS4_NOTIFY_ICON_PREDEFINED("download")')) `
+    'Toast has no Url icon or no fallback icon.'
+Assert-True ($main.Contains('GAME_BRIDGE_ICON_PROBE_FILE') `
+    -and $main.Contains('game_bridge_icon_probe_poll();')) `
+    'Icon probe trigger is missing.'
+Assert-True ($iconHeader.Contains('#define POORDS4_ICON_PNG_SIZE ') `
+    -and $iconHeader.Contains('0x89, 0x50, 0x4e, 0x47')) `
+    'Embedded toast icon is not a generated PNG.'
+Assert-True ($makefile.Contains('assets/poor_ds4_icon.h')) `
+    'Bridge build does not depend on the embedded icon header.'
+$python = Get-Command python3 -ErrorAction SilentlyContinue
+if ($python) {
+    & $python.Source (Join-Path $repo 'tests/validate_notify_json.py') |
+        Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) `
+        'Native toast JSON payload is not valid.'
+}
 Assert-True ($main.Contains('install_result == 0 ? 5u : 15u')) `
     'Bounded retry for a transient fail-closed game snapshot is missing.'
 Assert-True ($main.Contains(
