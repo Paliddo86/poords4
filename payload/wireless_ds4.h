@@ -77,6 +77,9 @@ typedef struct {
     uint64_t timestamp;
     uint32_t reset_combo_ticks;
     uint32_t reset_requested;
+    /* Consecutive rescans that saw a connected DS4 the reader cannot read. The
+     * supervisor rebuilds the reader when this reaches 2. */
+    uint32_t rescan_stuck;
 } PoorDS4RemoteReaderStatus;
 
 int wireless_ds4_remote_reader_status(

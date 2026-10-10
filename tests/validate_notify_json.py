@@ -63,16 +63,27 @@ def macro_text(text, name):
     return match.group(1).replace("\\\n", "\n")
 
 
-def build_payload(text, icon, body, sub_message):
-    # Mirrors the snprintf() in game_bridge_notify_native_with_icon(): the
-    # macros are separated by placeholders and SUB carries one of its own for
-    # the small line, so the argument order is icon, body, sub, icon, body.
+def preview_icon_spec(text):
+    """Resolve POORDS4_NOTIFY_PREVIEW_ICON: the collapsed toast only renders
+    predefined icons, so it is a Predefined spec resolved from the define."""
+    body = define_body(text, "POORDS4_NOTIFY_PREVIEW_ICON")
+    match = re.search(r'POORDS4_NOTIFY_ICON_PREDEFINED\("([^"]+)"\)', body)
+    if not match:
+        fail(f"unexpected preview icon define {body!r}")
+    name = match.group(1)
+    return f'{{"type":"Predefined","parameters":{{"icon":"{name}"}}}}', name
+
+
+def build_payload(text, view_icon, body, sub_message, preview_icon):
+    # Mirrors the snprintf() in game_bridge_notify_full(): the macros are
+    # separated by placeholders and SUB carries one of its own for the small
+    # line, so the argument order is view icon, body, sub, preview icon, body.
     template = ""
     for name in MACROS:
         if template:
             template += "%s"
         template += expand(text, macro_text(text, name))
-    values = [icon, body, sub_message, icon, body]
+    values = [view_icon, body, sub_message, preview_icon, body]
     parts = template.split("%s")
     if len(parts) != len(values) + 1:
         fail(f"template has {len(parts) - 1} %s placeholders, expected 5")
@@ -88,6 +99,7 @@ def check(text):
     icon = expand(text, macro_text(text, "POORDS4_NOTIFY_ICON_URL"))
     if not icon.startswith('{"type":"Url"'):
         fail(f"unexpected icon spec {icon!r}")
+    preview_icon, preview_name = preview_icon_spec(text)
     cases = [
         ("3 controller active", "wireless DS4 ready; waiting for a PS5 game"),
         ("3 controller active", "wireless DS4 active in the PS5 game"),
@@ -95,7 +107,7 @@ def check(text):
         ("PoorDS4: reset requested via controller shortcut", "PoorDS4"),
     ]
     for body, sub in cases:
-        payload = build_payload(text, icon, body, sub)
+        payload = build_payload(text, icon, body, sub, preview_icon)
         try:
             parsed = json.loads(payload)
         except json.JSONDecodeError as error:
@@ -110,8 +122,10 @@ def check(text):
              "rawData.viewData.message.body does not carry the message"),
             (view.get("subMessage", {}).get("body") == sub,
              "rawData.viewData.subMessage.body does not carry the event"),
-            (preview.get("icon", {}).get("type") == "Url",
-             "platformViews.previewDisabled.viewData.icon is not the Url icon"),
+            (preview.get("icon", {}).get("type") == "Predefined",
+             "collapsed toast icon is not a predefined one"),
+            (preview.get("icon", {}).get("parameters", {}).get("icon") ==
+             preview_name, "collapsed toast icon name is wrong"),
             (preview.get("message", {}).get("body") == body,
              "platformViews.previewDisabled.viewData.message.body is wrong"),
             (parsed.get("createdDateTime") is not None,
@@ -122,7 +136,8 @@ def check(text):
         for ok, message in checks:
             if not ok:
                 fail(message)
-        print(f"ok: {len(payload)} bytes, body={body!r}, sub={sub!r}")
+        print(f"ok: {len(payload)} bytes, body={body!r}, sub={sub!r}, "
+              f"preview={preview_name}")
 
 
 def main():

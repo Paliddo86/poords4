@@ -702,10 +702,15 @@ typedef struct {
     intptr_t fp_open;
     intptr_t fp_getdeviceid;
     intptr_t fp_getdeviceinfo;
+    intptr_t fp_isds4;
     uint32_t rescan_interval_loops;
     volatile uint32_t rescan_count;
     volatile uint32_t rescan_found;
     volatile int32_t  rescan_last_user;
+    /* Consecutive rescans that saw a DS4 connected for a candidate user but
+     * could not read it (stale RemotePlay client). Non-zero asks the
+     * supervisor to rebuild the reader. */
+    volatile uint32_t rescan_stuck;
     int32_t  candidate_count;
     int32_t  candidate_users[POORDS4_MAX_USER_CANDIDATES];
     int32_t  candidate_numbers[POORDS4_MAX_USER_CANDIDATES];
@@ -716,7 +721,7 @@ typedef struct {
 
 _Static_assert(sizeof(ScePadData) == 120,
                "ScePadData ABI changed");
-_Static_assert(sizeof(RemotePadReaderArgs) == 1920,
+_Static_assert(sizeof(RemotePadReaderArgs) == 1928,
                "RemotePadReaderArgs ABI changed");
 
 extern void *remote_pad_reader_stub(void *arg);
@@ -920,6 +925,7 @@ remote_pad_reader_rescan(RemotePadReaderArgs *a)
     typedef int32_t (*readstate_fn_t)(int32_t, void *);
     typedef int32_t (*close_pad_fn_t)(int32_t);
     typedef int32_t (*setlogin_fn_t)(int32_t);
+    typedef int32_t (*isds4_fn_t)(int32_t);
     gethandle_fn_t get_handle = (gethandle_fn_t)(uintptr_t)a->fp_gethandle;
     open_fn_t open_pad = (open_fn_t)(uintptr_t)a->fp_open;
     getid_fn_t get_device_id = (getid_fn_t)(uintptr_t)a->fp_getdeviceid;
@@ -927,10 +933,12 @@ remote_pad_reader_rescan(RemotePadReaderArgs *a)
     readstate_fn_t read_state = (readstate_fn_t)(uintptr_t)a->fp_readstate;
     close_pad_fn_t close_pad = (close_pad_fn_t)(uintptr_t)a->fp_closepad;
     setlogin_fn_t setlogin_user = (setlogin_fn_t)(uintptr_t)a->fp_setlogin;
+    isds4_fn_t is_ds4_user = (isds4_fn_t)(uintptr_t)a->fp_isds4;
     if (!open_pad || !get_device_id || !get_device_info || !read_state)
         return;
 
     a->rescan_count = a->rescan_count + 1u;
+    int stuck_seen = 0;
     for (int32_t candidate = 0; candidate < a->candidate_count; ++candidate) {
         int32_t user = a->candidate_users[candidate];
         if (user < 0)
@@ -952,6 +960,11 @@ remote_pad_reader_rescan(RemotePadReaderArgs *a)
             handle = get_handle(user, 0, 0);
         if (handle < 0)
             handle = open_pad(user, 0, 0, 0);
+        if (handle < 0) {
+            /* A controller associated after the reader started can sit behind
+             * another pad index of the same user: try it before giving up. */
+            handle = open_pad(user, 1, 0, 0);
+        }
         if (handle < 0)
             continue;
         int32_t device_id = -1;
@@ -978,6 +991,12 @@ remote_pad_reader_rescan(RemotePadReaderArgs *a)
             connected = pad->connected != 0;
         }
         if (!is_ds4 || !connected) {
+            /* libScePad reports a DS4 for this user, yet the pad cannot be read
+             * (stale RemotePlay client table, the case the reset shortcut used
+             * to fix). No rescan can repair that: ask the supervisor to rebuild
+             * the reader. A native DualSense is not reported by this query. */
+            if (is_ds4_user && is_ds4_user(user) > 0)
+                stuck_seen = 1;
             if (close_pad)
                 (void)close_pad(handle);
             continue;
@@ -1002,6 +1021,10 @@ remote_pad_reader_rescan(RemotePadReaderArgs *a)
         if (!placed && close_pad)
             (void)close_pad(handle);
     }
+    if (stuck_seen)
+        a->rescan_stuck = a->rescan_stuck + 1u;
+    else
+        a->rescan_stuck = 0;
 }
 
 __attribute__((noinline, used, section(".text.ds4reader")))
@@ -3675,6 +3698,7 @@ wireless_ds4_remote_reader_start(
     args.fp_open = fn_open;
     args.fp_getdeviceid = fn_getdeviceid;
     args.fp_getdeviceinfo = fn_getdeviceinfo;
+    args.fp_isds4 = fn_isds4;
     args.rescan_interval_loops = POORDS4_READER_RESCAN_LOOPS;
     args.candidate_count = (int32_t)(
         candidate_count > POORDS4_MAX_USER_CANDIDATES
@@ -3934,6 +3958,7 @@ wireless_ds4_remote_reader_status(
     out_status->read_empty_frames = snapshot.read_empty_frames;
     out_status->read_error_frames = snapshot.read_error_frames;
     out_status->state_fallback_frames = snapshot.state_fallback_frames;
+    out_status->rescan_stuck = snapshot.rescan_stuck;
     out_status->reader_mode = snapshot.reader_mode;
     {
         const ScePadData *pad =

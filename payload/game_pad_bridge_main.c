@@ -598,6 +598,33 @@ poords4_log(const char *format, ...)
     }
 }
 
+/* Writes a copy of the embedded icon to an arbitrary path. The icon probe uses
+ * it to test the locations the notification service can actually read. */
+static int
+copy_icon_to(const char *path)
+{
+    if (!path)
+        return -1;
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+        return -1;
+    size_t written = 0;
+    while (written < POORDS4_ICON_PNG_SIZE) {
+        ssize_t chunk = write(
+            fd, g_poor_ds4_icon_png + written,
+            POORDS4_ICON_PNG_SIZE - written);
+        if (chunk <= 0)
+            break;
+        written += (size_t)chunk;
+    }
+    close(fd);
+    if (written != POORDS4_ICON_PNG_SIZE) {
+        (void)unlink(path);
+        return -1;
+    }
+    return 0;
+}
+
 /* The notification service loads the toast icon by path, so the embedded
  * PoorDS4 icon is materialised in the runtime data directory. A file that is
  * already there is left untouched, so the icon can be replaced without
@@ -612,23 +639,8 @@ game_bridge_icon_path(void)
         close(fd);
         return GAME_BRIDGE_ICON_FILE;
     }
-    fd = open(GAME_BRIDGE_ICON_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0)
+    if (copy_icon_to(GAME_BRIDGE_ICON_FILE) != 0)
         return NULL;
-    size_t written = 0;
-    while (written < POORDS4_ICON_PNG_SIZE) {
-        ssize_t chunk = write(
-            fd, g_poor_ds4_icon_png + written,
-            POORDS4_ICON_PNG_SIZE - written);
-        if (chunk <= 0)
-            break;
-        written += (size_t)chunk;
-    }
-    close(fd);
-    if (written != POORDS4_ICON_PNG_SIZE) {
-        (void)unlink(GAME_BRIDGE_ICON_FILE);
-        return NULL;
-    }
     poords4_log("[PoorDS4] toast icon installed at %s (%u bytes)\n",
                 GAME_BRIDGE_ICON_FILE, (unsigned)POORDS4_ICON_PNG_SIZE);
     return GAME_BRIDGE_ICON_FILE;
@@ -680,6 +692,12 @@ game_bridge_escape_json(const char *source, char *out, size_t cap)
 #define POORDS4_NOTIFY_ICON_URL \
     "{\"type\":\"Url\",\"parameters\":{\"url\":\"" GAME_BRIDGE_ICON_FILE "\"}}"
 
+/* The collapsed toast - the popup the user actually sees - only renders the
+ * predefined icon set: a Url icon shows nothing there (field report). The
+ * custom icon is therefore used in the expanded view and a predefined one in
+ * the preview, the same split the SDK sample uses. */
+#define POORDS4_NOTIFY_PREVIEW_ICON POORDS4_NOTIFY_ICON_PREDEFINED("download")
+
 #define POORDS4_NOTIFY_TEMPLATE_HEAD \
     "{\"rawData\":{\"viewTemplateType\":\"InteractiveToastTemplateB\"," \
     "\"channelType\":\"Downloads\",\"useCaseId\":\"IDC\"," \
@@ -716,15 +734,14 @@ game_bridge_notify_icon(void)
 }
 
 static int
-game_bridge_notify_native_with_icon(const char *message,
-                                    const char *sub_message,
-                                    const char *icon)
+game_bridge_notify_full(const char *message, const char *sub_message,
+                        const char *view_icon, const char *preview_icon)
 {
     static unsigned notify_serial;
     char body[192];
     char sub[128];
     char payload[1024];
-    if (!message || !icon)
+    if (!message || !view_icon || !preview_icon)
         return 0;
     game_bridge_escape_json(message, body, sizeof(body));
     game_bridge_escape_json(sub_message, sub, sizeof(sub));
@@ -737,7 +754,7 @@ game_bridge_notify_native_with_icon(const char *message,
         "%s"                                   /* preview icon */
         POORDS4_NOTIFY_TEMPLATE_BODY "%s"      /* preview body */
         POORDS4_NOTIFY_TEMPLATE_END,
-        icon, body, sub, icon, body, 900000u + notify_serial);
+        view_icon, body, sub, preview_icon, body, 900000u + notify_serial);
     if (length <= 0 || (size_t)length >= sizeof(payload))
         return 0;
     int result = sceNotificationSend(0xfe /* system */, 1, payload);
@@ -751,6 +768,17 @@ game_bridge_notify_native_with_icon(const char *message,
             "message=%s\n", (uint32_t)result, message);
     }
     return result == 0 ? 1 : 0;
+}
+
+/* Toast with the standard icon policy: custom icon in the expanded view when
+ * it could be installed, predefined preview icon in the collapsed popup. */
+static int
+game_bridge_notify_native_with_icon(const char *message,
+                                    const char *sub_message,
+                                    const char *icon)
+{
+    return game_bridge_notify_full(
+        message, sub_message, icon, POORDS4_NOTIFY_PREVIEW_ICON);
 }
 
 /* Sends a toast whose small line under the main one is explicit. */
@@ -780,24 +808,56 @@ game_bridge_notify(const char *message)
 static void
 game_bridge_icon_probe(void)
 {
+    /* Extra copies so the probe can tell whether the service simply cannot read
+     * the data directory. */
+    (void)copy_icon_to(GAME_BRIDGE_ICON_FILE);
+    (void)copy_icon_to("/tmp/poor_ds4_icon.png");
     static const char *const labels[] = {
-        "custom PoorDS4 icon",
+        "custom icon in both views",
+        "custom view + predefined preview",
+        "custom icon with file:// scheme",
+        "custom icon from /tmp",
         "predefined download",
         "predefined game",
+        "predefined trophy",
+        "predefined usb",
+        "predefined network",
+        "predefined camera",
     };
-    static const char *const icons[] = {
+    static const char *const views[] = {
         POORDS4_NOTIFY_ICON_URL,
+        POORDS4_NOTIFY_ICON_URL,
+        "{\"type\":\"Url\",\"parameters\":{\"url\":\"file://"
+            GAME_BRIDGE_ICON_FILE "\"}}",
+        "{\"type\":\"Url\",\"parameters\":{\"url\":\"/tmp/poor_ds4_icon.png\"}}",
         POORDS4_NOTIFY_ICON_PREDEFINED("download"),
         POORDS4_NOTIFY_ICON_PREDEFINED("game"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("trophy"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("usb"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("network"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("camera"),
     };
-    const unsigned total = (unsigned)(sizeof(icons) / sizeof(icons[0]));
+    static const char *const previews[] = {
+        POORDS4_NOTIFY_ICON_URL,
+        POORDS4_NOTIFY_PREVIEW_ICON,
+        "{\"type\":\"Url\",\"parameters\":{\"url\":\"file://"
+            GAME_BRIDGE_ICON_FILE "\"}}",
+        "{\"type\":\"Url\",\"parameters\":{\"url\":\"/tmp/poor_ds4_icon.png\"}}",
+        POORDS4_NOTIFY_ICON_PREDEFINED("download"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("game"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("trophy"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("usb"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("network"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("camera"),
+    };
+    const unsigned total = (unsigned)(sizeof(views) / sizeof(views[0]));
     for (unsigned index = 0; index < total; ++index) {
         char message[96];
         snprintf(message, sizeof(message),
                  "PoorDS4 icon test %u/%u: %s", index + 1u, total,
                  labels[index]);
-        if (!game_bridge_notify_native_with_icon(
-                message, "PoorDS4 icon test", icons[index])) {
+        if (!game_bridge_notify_full(message, "PoorDS4 icon test",
+                                     views[index], previews[index])) {
             poords4_log(
                 "[PoorDS4] icon probe %u/%u rejected\n",
                 index + 1u, total);
@@ -1266,6 +1326,44 @@ refresh_simulated_pads_config(void)
     }
 }
 
+/* Requests a reader rebuild when the in-target rescan reports a DS4 it cannot
+ * read (stale RemotePlay client), which is exactly the case the reset shortcut
+ * used to fix. Bounded per episode so an unreadable controller cannot turn
+ * into a rebuild loop; the budget is restored once the condition clears. */
+static unsigned s_reader_refresh_requests;
+static unsigned s_reader_refresh_warned;
+
+static int
+reader_refresh_due(const PoorDS4RemoteReaderStatus *status)
+{
+    if (!status || status->rescan_stuck == 0u) {
+        s_reader_refresh_requests = 0;
+        s_reader_refresh_warned = 0;
+        return 0;
+    }
+    if (status->rescan_stuck < 2u)
+        return 0;
+    if (s_reader_refresh_requests < 3u) {
+        s_reader_refresh_requests++;
+        poords4_log(
+            "[PoorDS4] DS4 connected but unreadable on the reader client; "
+            "rebuilding the wireless reader (attempt %u/3)\n",
+            s_reader_refresh_requests);
+        game_bridge_notify(
+            "PoorDS4: new controller detected; refreshing wireless reader");
+        return 1;
+    }
+    if (s_reader_refresh_warned == 0u) {
+        s_reader_refresh_warned = 1u;
+        poords4_log(
+            "[PoorDS4] controller still unreadable after 3 reader rebuilds; "
+            "use the reset combo\n");
+        game_bridge_notify(
+            "PoorDS4: controller unreadable; press the reset combo");
+    }
+    return 0;
+}
+
 static void
 feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
                             pid_t game_pid, intptr_t bridge_args,
@@ -1665,6 +1763,20 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
         if (input_frames != 0 && (input_frames % 600u) == 0 &&
             input_frames != last_health_frame) {
             wireless_ds4_log_verbose_poll();
+            PoorDS4RemoteReaderStatus reader_watch;
+            memset(&reader_watch, 0, sizeof(reader_watch));
+            if (reader_pid > 0 && reader_args != 0 &&
+                wireless_ds4_remote_reader_status(
+                    reader_pid, reader_args, &reader_watch) == 0) {
+                if (reader_watch.rescan_stuck != 0u)
+                    POORDS4_LOG_DEBUG(
+                        "[PoorDS4] reader rescan stuck count=%u\n",
+                        reader_watch.rescan_stuck);
+                if (reader_refresh_due(&reader_watch)) {
+                    end_reason = SESSION_END_READER_FAILED;
+                    break;
+                }
+            }
             POORDS4_LOG_DEBUG(
                 "[PoorDS4] BRIDGE HEALTH in=%u out=%u seq=%u conn=%u "
                 "buttons=0x%08x sticks=%u,%u,%u,%u triggers=%u,%u "
@@ -2242,8 +2354,12 @@ main(void)
             reader_restart_required = 1;
         }
         reader_connected_was = reader_connected ? 1 : 0;
+        if (reader_preflight.rescan_stuck != 0u)
+            POORDS4_LOG_DEBUG(
+                "[PoorDS4] reader rescan stuck count=%u (waiting)\n",
+                reader_preflight.rescan_stuck);
         if (reader_restart_required || !reader_healthy ||
-            foreground_changed) {
+            foreground_changed || reader_refresh_due(&reader_preflight)) {
             poords4_log(
                 "[PoorDS4] restoring wireless reader before game scan "
                 "pid=%d args=0x%lx snapshot=%d ready=%d stop=%d "

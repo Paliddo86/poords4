@@ -172,9 +172,12 @@ telemetry in every case.
 
 Notifications are native system toasts only. The icon comes from the payload
 itself: it is written to `/data/poords4/icon.png` on first use, and replacing
-that file changes the icon without rebuilding the payload. Creating
-`/data/poords4/icon-probe` sends one toast per icon variant (custom icon,
-`download`, `game`) so the rendering can be compared on the console.
+that file changes the icon without rebuilding the payload. The collapsed popup
+only renders the predefined icon set the console ships, so the custom icon is
+used in the expanded view and a predefined one in the popup. Creating
+`/data/poords4/icon-probe` sends one toast per icon variant (custom icon in
+both views, custom with a predefined popup, `file://` scheme, a `/tmp` copy and
+several predefined names) so the rendering can be compared on the console.
 
 ## Multi-Controller Support (Experimental)
 
