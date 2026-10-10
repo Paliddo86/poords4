@@ -11,6 +11,8 @@ typedef struct {
     int32_t pad_index;
     int32_t pad_handle;
     int32_t ds4_connected;
+    /* Number of DS4 pads the reader detected and associated with a slot. */
+    int32_t ds4_count;
 } PoorDS4PadSource;
 
 int wireless_ds4_remote_reader_start(

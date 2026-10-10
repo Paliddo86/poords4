@@ -3,6 +3,70 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc74] - 2026-09-30
+
+### Added
+
+- **Automatic pad discovery (no more reset shortcut needed)**: the reader
+  thread, which already runs inside RemotePlay, now re-probes the candidate
+  users every ~3 s (`POORDS4_READER_RESCAN_LOOPS`) and places a connected DS4
+  that has no slot yet into a free one. The host writer already iterates all
+  four slots every frame, so the new controller starts being fed immediately
+  and logs `automatic discovery: slot mask=0x... now feeding the game`.
+  - Runs entirely inside the target thread: a few fast libScePad calls, no
+    ptrace stop, no reader restart, no interruption of the bridged pads.
+  - Only `054c:05c4` and `054c:09cc` revision DS4 are accepted, so a native
+    DualSense can never take a slot.
+  - `RemotePadReaderArgs` grew (1464 -> 1920 bytes, `_Static_assert` updated)
+    with the rescan function pointers, candidate user/number tables, per-slot
+    user ids and the rescan counters. `remote_pad_reader_rescan()` sits between
+    `remote_pad_reader_stub` and `remote_pad_reader_stub_end`, i.e. inside the
+    range copied into the target (verified with `llvm-nm`: 0x5e80 .. 0x62c0 ..
+    0x6550).
+  - Reader exit now always releases slots 1..3 (they can be opened by the
+    rescan too), while slot 0 stays conditional on `close_pad_on_exit`.
+
+### Changed
+
+- **Toasts report the DS4 count** instead of a single user name (rc73 work):
+  `PoorDS4: wireless DS4 ready (2 DS4 detected and associated); waiting for a
+  PS5 game`. The "bridge injected" toast stays generic because discovery has
+  not run yet.
+- User ids merged from RemotePlay's registered-user list now receive their list
+  position as the login user number (previously -1, i.e. no bind), so a DS4 on
+  a profile that is registered but not logged in is probed with the same
+  binding as the other users.
+
+## [0.1.0-rc73] - 2026-09-30
+
+### Fixed
+
+- **Toasts report the DS4 count instead of a single user name**: with several
+  DS4 every notification showed only the user of the last detected DS4, which
+  was misleading. The reader now publishes `PoorDS4PadSource::ds4_count` (pads
+  detected *and* associated with a slot) and the toasts read
+  `PoorDS4: <message> (N DS4 detected and associated)`. The "bridge injected"
+  toast stays generic because discovery has not run yet.
+- **Login user number for users outside the payload login list**: user ids
+  merged from RemotePlay's registered-user list now receive their list position
+  as the login user number (previously -1, i.e. no bind), so a DS4 on a profile
+  that is registered but not logged in (for example `0x…486`) is probed with
+  the same binding as the other users.
+
+### Verified in the field (rc72 logs)
+
+- After the controller reset shortcut, discovery found **2 DS4** (`matches=2`)
+  in slots 1 and 2 (`0x…485`, `0x…484`) and both worked in game. The reset
+  re-runs discovery, which the reader otherwise never does while its source is
+  alive: connect and assign every controller before starting the game, or use
+  the reset shortcut afterwards.
+- `scePadGetInfo` returns one record per open pad (handle plus a state word),
+  confirming libScePad saw both DS4.
+- RemotePlay's registered list exposed a **fourth** user id (`0x…486`) that the
+  payload login list does not contain; it is now probed as well.
+- The `pad alt-index` and `pad alt-type` probes found no hidden pad: the second
+  DS4 simply was not connected/assigned during the earlier cycles.
+
 ## [0.1.0-rc72] - 2026-09-30
 
 ### Fixed

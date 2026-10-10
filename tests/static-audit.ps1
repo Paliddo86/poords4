@@ -16,8 +16,8 @@ $bridge = [IO.File]::ReadAllText(
 $makefile = [IO.File]::ReadAllText(
     (Join-Path $repo 'payload/Makefile'))
 
-Assert-True ($makefile.Contains('RC_VERSION := 72')) `
-    'Makefile RC version is not 72.'
+Assert-True ($makefile.Contains('RC_VERSION := 74')) `
+    'Makefile RC version is not 74.'
 Assert-True (-not $makefile.Contains('-lScePad')) `
     'Build still links libScePad despite using runtime-resolved game exports.'
 Assert-True (-not $makefile.Contains('-lpthread')) `
@@ -70,7 +70,7 @@ Assert-True ($main.Contains(
     'game_session_end_reason_name(end_reason)')) `
     'Session diagnostics do not include a named termination reason.'
 Assert-True ($main.Contains(
-    'g_pad_source = (PoorDS4PadSource){-1, -1, -1, 0};')) `
+    'g_pad_source = (PoorDS4PadSource){-1, -1, -1, 0, 0};')) `
     'Reader-loss gate does not invalidate the stale source identity.'
 
 $readerGate = $main.IndexOf(

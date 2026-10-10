@@ -46,6 +46,11 @@
 extern void poords4_log(const char *format, ...);
 #define klog_printf poords4_log
 #define POORDS4_REMOTE_PAD_CAPACITY 256u
+
+/* Reader iterations between two automatic pad rescans (~3 s at the 8.3 ms
+ * reader interval). The rescan runs inside the target thread, so it costs a
+ * few fast libScePad calls and never stops RemotePlay. */
+#define POORDS4_READER_RESCAN_LOOPS 360u
 #define POORDS4_GAME_BRIDGE_FW_0602 UINT32_C(0x06020004)
 #define POORDS4_GAME_BRIDGE_FW_0860 UINT32_C(0x08600004)
 #define POORDS4_GAME_BRIDGE_FW_1001 UINT32_C(0x10010000)
@@ -196,7 +201,7 @@ static int remote_user_list(
 static uint32_t merge_user_ids(
     const int32_t *source, uint32_t source_count, int32_t *candidate_ids,
     int32_t *candidate_numbers, uint32_t candidate_count,
-    uint32_t max_candidates);
+    uint32_t max_candidates, uint32_t first_number);
 static int g_report_archive_fd = -1;
 
 /* Firmware admission evidence captured from the already-safe RemotePlay
@@ -604,15 +609,41 @@ typedef struct {
      * number of its controller so the reader can rebind before each read. */
     intptr_t fp_setlogin;
     int32_t slot_login_numbers[POORDS4_MAX_SLOTS];
+    /* Automatic discovery: the target thread re-probes the candidate users so
+     * a controller connected or assigned after the reader started is picked up
+     * without restarting the reader (no reset shortcut needed). */
+    intptr_t fp_gethandle;
+    intptr_t fp_open;
+    intptr_t fp_getdeviceid;
+    intptr_t fp_getdeviceinfo;
+    uint32_t rescan_interval_loops;
+    volatile uint32_t rescan_count;
+    volatile uint32_t rescan_found;
+    volatile int32_t  rescan_last_user;
+    int32_t  candidate_count;
+    int32_t  candidate_users[POORDS4_MAX_USER_CANDIDATES];
+    int32_t  candidate_numbers[POORDS4_MAX_USER_CANDIDATES];
+    int32_t  slot_users[POORDS4_MAX_SLOTS];
+    uint8_t  rescan_pad[POORDS4_REMOTE_PAD_CAPACITY];
+    uint8_t  rescan_info[64];
 } RemotePadReaderArgs;
 
 _Static_assert(sizeof(ScePadData) == 120,
                "ScePadData ABI changed");
-_Static_assert(sizeof(RemotePadReaderArgs) == 1464,
+_Static_assert(sizeof(RemotePadReaderArgs) == 1920,
                "RemotePadReaderArgs ABI changed");
 
 extern void *remote_pad_reader_stub(void *arg);
 extern void remote_pad_reader_stub_end(void);
+
+/*
+ * Target-side automatic discovery, called from the reader thread. It runs
+ * inside RemotePlay: a controller that becomes available after the reader
+ * started is placed in a free slot on its own.
+ */
+__attribute__((noinline, used, section(".text.ds4reader")))
+static void
+remote_pad_reader_rescan(RemotePadReaderArgs *a);
 
 /*
  * Position-independent target thread. Do not call local symbols or touch
@@ -640,6 +671,7 @@ remote_pad_reader_stub(void *arg)
     setlogin_fn_t setlogin_user =
         (setlogin_fn_t)(uintptr_t)a->fp_setlogin;
     uint32_t owner_countdown = a->owner_check_interval;
+    uint32_t rescan_countdown = a->rescan_interval_loops;
 
     __atomic_store_n(&a->ready, 1, __ATOMIC_RELEASE);
     while (!__atomic_load_n(&a->stop, __ATOMIC_ACQUIRE)) {
@@ -735,6 +767,17 @@ remote_pad_reader_stub(void *arg)
             }
         }
 
+        /* Automatic discovery of controllers that appeared after the reader
+         * started: re-open the candidate users and fill any free slot. */
+        if (a->candidate_count > 0 && a->rescan_interval_loops != 0u) {
+            if (rescan_countdown > 0u) {
+                rescan_countdown--;
+            } else {
+                rescan_countdown = a->rescan_interval_loops;
+                remote_pad_reader_rescan(a);
+            }
+        }
+
         sleep_us(a->interval_us);
         if (check_owner && a->owner_pid > 1 &&
             a->owner_check_interval != 0) {
@@ -758,16 +801,114 @@ remote_pad_reader_stub(void *arg)
             }
         }
     }
-    if (a->close_pad_on_exit && close_pad) {
-        if (a->pad_handle >= 0)
-            (void)close_pad(a->pad_handle);
+    if (close_pad) {
+        /* Slots 1..3 belong to the reader: they are opened either by the host
+         * discovery or by the automatic rescan, so they are always released.
+         * Slot 0 is only closed when this reader opened it itself. */
         for (unsigned s = 1; s < POORDS4_MAX_SLOTS; ++s) {
-            if (a->slot_handles[s] > 0)
+            if (a->slot_handles[s] > 0 &&
+                a->slot_handles[s] != a->pad_handle)
                 (void)close_pad(a->slot_handles[s]);
         }
+        if (a->close_pad_on_exit && a->pad_handle >= 0)
+            (void)close_pad(a->pad_handle);
     }
     __atomic_store_n(&a->ready, 2, __ATOMIC_RELEASE);
     return (void *)0;
+}
+
+/*
+ * Automatic discovery body. Lives in the copied reader range, therefore it may
+ * only use the args structure, the resolved function pointers it stores and
+ * its own locals (no libc, no globals). Fills a free slot when a connected DS4
+ * that has no slot yet is found, so the host writer starts feeding it without
+ * any reader restart.
+ */
+__attribute__((noinline, used, section(".text.ds4reader")))
+static void
+remote_pad_reader_rescan(RemotePadReaderArgs *a)
+{
+    typedef int32_t (*gethandle_fn_t)(int32_t, int32_t, int32_t);
+    typedef int32_t (*open_fn_t)(int32_t, int32_t, int32_t, const void *);
+    typedef int32_t (*getid_fn_t)(int32_t, void *);
+    typedef int32_t (*readstate_fn_t)(int32_t, void *);
+    typedef int32_t (*close_pad_fn_t)(int32_t);
+    gethandle_fn_t get_handle = (gethandle_fn_t)(uintptr_t)a->fp_gethandle;
+    open_fn_t open_pad = (open_fn_t)(uintptr_t)a->fp_open;
+    getid_fn_t get_device_id = (getid_fn_t)(uintptr_t)a->fp_getdeviceid;
+    getid_fn_t get_device_info = (getid_fn_t)(uintptr_t)a->fp_getdeviceinfo;
+    readstate_fn_t read_state = (readstate_fn_t)(uintptr_t)a->fp_readstate;
+    close_pad_fn_t close_pad = (close_pad_fn_t)(uintptr_t)a->fp_closepad;
+    if (!open_pad || !get_device_id || !get_device_info || !read_state)
+        return;
+
+    a->rescan_count = a->rescan_count + 1u;
+    for (int32_t candidate = 0; candidate < a->candidate_count; ++candidate) {
+        int32_t user = a->candidate_users[candidate];
+        if (user < 0)
+            continue;
+        int has_slot = 0;
+        for (unsigned slot = 0; slot < POORDS4_MAX_SLOTS; ++slot) {
+            if (a->slot_users[slot] == user && a->slot_handles[slot] > 0)
+                has_slot = 1;
+        }
+        if (has_slot)
+            continue;
+        int32_t handle = -1;
+        if (get_handle)
+            handle = get_handle(user, 0, 0);
+        if (handle < 0)
+            handle = open_pad(user, 0, 0, 0);
+        if (handle < 0)
+            continue;
+        int32_t device_id = -1;
+        int32_t device_call = get_device_id(handle, &device_id);
+        int32_t info_call = -1;
+        if (device_call == 0 && device_id >= 0)
+            info_call = get_device_info(device_id, a->rescan_info);
+        uint32_t vendor = 0;
+        uint32_t product = 0;
+        if (info_call == 0) {
+            vendor = (uint32_t)a->rescan_info[16] |
+                ((uint32_t)a->rescan_info[17] << 8);
+            product = (uint32_t)a->rescan_info[18] |
+                ((uint32_t)a->rescan_info[19] << 8);
+        }
+        /* Only the DS4 revisions the bridge supports; a native DualSense
+         * (054c:0ce6 / 054c:0df2) must never take a slot. */
+        int is_ds4 = info_call == 0 && vendor == UINT32_C(0x054c) &&
+            (product == UINT32_C(0x05c4) || product == UINT32_C(0x09cc));
+        int connected = 0;
+        if (is_ds4 && read_state(handle, a->rescan_pad) == 0) {
+            const ScePadData *pad =
+                (const ScePadData *)(const void *)a->rescan_pad;
+            connected = pad->connected != 0;
+        }
+        if (!is_ds4 || !connected) {
+            if (close_pad)
+                (void)close_pad(handle);
+            continue;
+        }
+        int placed = 0;
+        for (unsigned slot = 1; slot < POORDS4_MAX_SLOTS; ++slot) {
+            if (a->slot_handles[slot] <= 0) {
+                a->slot_users[slot] = user;
+                a->slot_login_numbers[slot] =
+                    a->candidate_numbers[candidate];
+                a->slot_results[slot] = -1;
+                a->slot_seqs[slot] = 0;
+                a->rescan_last_user = user;
+                a->rescan_found = a->rescan_found + 1u;
+                /* Publish the handle last: the reader only polls a slot whose
+                 * handle is positive. */
+                a->slot_handles[slot] = handle;
+                placed = 1;
+                break;
+            }
+        }
+        if (!placed && close_pad)
+            (void)close_pad(handle);
+    }
 }
 
 __attribute__((noinline, used, section(".text.ds4reader")))
@@ -2532,6 +2673,7 @@ wireless_ds4_remote_reader_start(
         out_source->pad_index = -1;
         out_source->pad_handle = -1;
         out_source->ds4_connected = 0;
+        out_source->ds4_count = 0;
     }
     g_source_pad_firmware = 0;
     memset(g_source_pad_fingerprints, 0,
@@ -2863,7 +3005,7 @@ wireless_ds4_remote_reader_start(
         if (login_ok == 0)
             candidate_count = merge_user_ids(
                 remote_users, 4u, candidate_ids, candidate_numbers,
-                candidate_count, POORDS4_MAX_USER_CANDIDATES);
+                candidate_count, POORDS4_MAX_USER_CANDIDATES, 1u);
         remote_users[0] = -1;
         remote_users[1] = -1;
         remote_users[2] = -1;
@@ -2881,7 +3023,7 @@ wireless_ds4_remote_reader_start(
         if (registered_ok == 0)
             candidate_count = merge_user_ids(
                 remote_users, 4u, candidate_ids, candidate_numbers,
-                candidate_count, POORDS4_MAX_USER_CANDIDATES);
+                candidate_count, POORDS4_MAX_USER_CANDIDATES, 1u);
         klog_printf("[PoorDS4] reader user candidates n=%u\n",
                     candidate_count);
     }
@@ -3429,6 +3571,23 @@ wireless_ds4_remote_reader_start(
         memset(args.slot_data[s], 0, sizeof(args.slot_data[s]));
     }
     args.fp_setlogin = fn_setloginuser;
+    /* Automatic pad discovery performed inside the reader thread. */
+    args.fp_gethandle = fn_gethandle;
+    args.fp_open = fn_open;
+    args.fp_getdeviceid = fn_getdeviceid;
+    args.fp_getdeviceinfo = fn_getdeviceinfo;
+    args.rescan_interval_loops = POORDS4_READER_RESCAN_LOOPS;
+    args.candidate_count = (int32_t)(
+        candidate_count > POORDS4_MAX_USER_CANDIDATES
+            ? POORDS4_MAX_USER_CANDIDATES : candidate_count);
+    for (unsigned index = 0; index < POORDS4_MAX_USER_CANDIDATES; ++index) {
+        args.candidate_users[index] = candidate_ids[index];
+        args.candidate_numbers[index] = candidate_numbers[index];
+    }
+    for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s)
+        args.slot_users[s] = multi_users[s];
+    /* Slot 0 always polls a->pad_handle, i.e. the selected DS4. */
+    args.slot_users[0] = selected_user;
     /* The reader thread treats a->pad_handle as slot 0 (the primary pad). */
     args.slot_login_numbers[0] = selected_number;
     if (pt_io_write(target, args_addr, &args, sizeof(args)) != 0)
@@ -3523,6 +3682,7 @@ cleanup:
                 out_source->pad_index = selected_index;
                 out_source->pad_handle = handle;
                 out_source->ds4_connected = selected_is_ds4;
+                out_source->ds4_count = (int32_t)ds4_count;
             }
             klog_printf(
                 "[PoorDS4] reader ready pid=%d args=0x%lx "
@@ -6663,7 +6823,8 @@ remote_user_list(pid_t target, intptr_t trap_mem, intptr_t fn_list,
 static uint32_t
 merge_user_ids(const int32_t *source, uint32_t source_count,
                int32_t *candidate_ids, int32_t *candidate_numbers,
-               uint32_t candidate_count, uint32_t max_candidates)
+               uint32_t candidate_count, uint32_t max_candidates,
+               uint32_t first_number)
 {
     for (uint32_t index = 0; index < source_count; ++index) {
         int32_t user_id = source[index];
@@ -6675,7 +6836,11 @@ merge_user_ids(const int32_t *source, uint32_t source_count,
                 already_listed = 1;
         if (!already_listed && candidate_count < max_candidates) {
             candidate_ids[candidate_count] = user_id;
-            candidate_numbers[candidate_count] = -1;
+            /* A user that is missing from the payload's login list still has a
+             * position in the user service list, which is the login user
+             * number the reader binds before probing that user. */
+            candidate_numbers[candidate_count] = first_number > 0
+                ? (int32_t)(first_number + index) : -1;
             candidate_count++;
         }
     }

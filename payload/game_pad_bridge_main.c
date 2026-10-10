@@ -54,7 +54,7 @@ extern int sceKernelGetAppInfo(pid_t pid, app_info_t *info);
 
 static time_t g_last_supervisor_write;
 static int g_supervisor_lock_fd = -1;
-static PoorDS4PadSource g_pad_source = {-1, -1, -1, 0};
+static PoorDS4PadSource g_pad_source = {-1, -1, -1, 0, 0};
 static pid_t g_reader_pid = -1;
 static intptr_t g_reader_args;
 static intptr_t g_bridge_args;
@@ -590,25 +590,18 @@ game_bridge_notify(const char *message)
         (uint32_t)result, message ? message : "");
 }
 
-/* Adds the display name of the user owning the activating DS4 to a toast. */
+/* Reports how many wireless DS4 the reader detected and associated with a
+ * slot. A single user name was misleading once more than one DS4 is bridged,
+ * because every toast showed only the user of the last detected DS4. */
 static void
-notify_with_user(const char *prefix, const char *suffix, int32_t user_id)
+notify_with_ds4_count(const char *prefix, const char *suffix,
+                      int32_t ds4_count)
 {
-    char label[96];
     char message[256];
-    memset(label, 0, sizeof(label));
-    if (user_id >= 0) {
-        char name[64];
-        memset(name, 0, sizeof(name));
-        if (sceUserServiceGetUserName(user_id, name, sizeof(name)) == 0 &&
-            name[0] != 0)
-            snprintf(label, sizeof(label), " (user %s)", name);
-        else
-            snprintf(label, sizeof(label), " (user 0x%08x)",
-                     (uint32_t)user_id);
-    }
-    snprintf(message, sizeof(message), "PoorDS4: %s%s%s",
-             prefix ? prefix : "", label, suffix ? suffix : "");
+    int count = ds4_count > 0 ? (int)ds4_count : 0;
+    snprintf(message, sizeof(message),
+             "PoorDS4: %s (%d DS4 detected and associated)%s",
+             prefix ? prefix : "", count, suffix ? suffix : "");
     game_bridge_notify(message);
 }
 
@@ -1067,6 +1060,13 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
                 (void)wireless_ds4_game_bridge_deactivate_slot(game_pid, bridge_args, s);
             }
         }
+    }
+    {
+        uint32_t newly_fed = current_fed_mask & ~s_prev_fed_mask;
+        if ((newly_fed & ~1u) != 0u)
+            poords4_log(
+                "[PoorDS4] automatic discovery: slot mask=0x%08x now "
+                "feeding the game\n", newly_fed);
     }
     s_prev_fed_mask = current_fed_mask;
 }
@@ -1806,7 +1806,7 @@ recover_wireless_reader_in_place(
             memset(user_numbers, 0xff, sizeof(user_numbers));
             uint32_t user_count =
                 collect_user_candidates(users, user_numbers);
-            PoorDS4PadSource candidate = {-1, -1, -1, 0};
+            PoorDS4PadSource candidate = {-1, -1, -1, 0, 0};
             pid_t candidate_pid = -1;
             intptr_t candidate_args = 0;
             attempts++;
@@ -1885,12 +1885,10 @@ main(void)
     poords4_log(
         "[PoorDS4] game bridge start rc=%d auto_watch=%d\n",
         POORDS4_RC_VERSION, POORDS4_AUTO_WATCH);
-    {
-        int32_t foreground_user = -1;
-        (void)sceUserServiceGetForegroundUser(&foreground_user);
-        notify_with_user("wireless DS4 bridge injected",
-                         "; starting reader", foreground_user);
-    }
+    /* The DS4 count is only known after the reader has run its discovery, so
+     * this first toast stays generic. */
+    game_bridge_notify(
+        "PoorDS4: wireless DS4 bridge injected; starting reader");
 
     if (start_wireless_reader(
             &g_pad_source, &reader_pid, &reader_args,
@@ -1902,8 +1900,8 @@ main(void)
      * when the user stops it before launching a game. */
     exit_code = 0;
     write_supervisor_state("waiting_for_game", -1, 0, 0, 1);
-    notify_with_user("wireless DS4 ready",
-                     "; waiting for a PS5 game", g_pad_source.user_id);
+    notify_with_ds4_count("wireless DS4 ready",
+                          "; waiting for a PS5 game", g_pad_source.ds4_count);
 
     pid_t launch_candidate_pid = -1;
     uint64_t launch_candidate_since_ms = 0;
@@ -1970,8 +1968,8 @@ main(void)
             reader_args = 0;
             g_reader_pid = -1;
             g_reader_args = 0;
-            g_pad_source = (PoorDS4PadSource){-1, -1, -1, 0};
-            PoorDS4PadSource recovered_source = {-1, -1, -1, 0};
+            g_pad_source = (PoorDS4PadSource){-1, -1, -1, 0, 0};
+            PoorDS4PadSource recovered_source = {-1, -1, -1, 0, 0};
             if (start_wireless_reader(
                     &recovered_source, &reader_pid, &reader_args,
                     sessions, total_output_frames) != 0) {
@@ -2234,8 +2232,8 @@ main(void)
             "session=%u\n",
             reader_pid, (unsigned long)reader_args,
             game_pid, (unsigned long)bridge_args, sessions);
-        notify_with_user("wireless DS4 active in the PS5 game", "",
-                         g_pad_source.user_id);
+        notify_with_ds4_count("wireless DS4 active in the PS5 game", "",
+                              g_pad_source.ds4_count);
         GameSessionEndReason end_reason = SESSION_END_STOP_REQUESTED;
         for (;;) {
             unsigned session_output_frames = run_game_session(
@@ -2378,7 +2376,7 @@ main(void)
             reader_args = 0;
             g_reader_pid = -1;
             g_reader_args = 0;
-            g_pad_source = (PoorDS4PadSource){-1, -1, -1, 0};
+            g_pad_source = (PoorDS4PadSource){-1, -1, -1, 0, 0};
             reader_restart_required = 1;
             launch_candidate_pid = game_pid;
             launch_candidate_since_ms = 1;
