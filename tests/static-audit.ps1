@@ -88,8 +88,12 @@ Assert-True ($main.Contains('game_bridge_icon_path(void)') `
     -and $main.Contains('GAME_BRIDGE_ICON_FILE  POORDS4_DATA_DIR "/icon.png"')) `
     'Toast icon is not installed in the runtime data directory.'
 Assert-True ($main.Contains('POORDS4_NOTIFY_ICON_URL') `
-    -and $main.Contains('POORDS4_NOTIFY_ICON_PREDEFINED("download")')) `
+    -and $main.Contains('POORDS4_NOTIFY_ICON_FALLBACK')) `
     'Toast has no Url icon or no fallback icon.'
+Assert-True ($main.Contains('POORDS4_ICON_DIR       "/user/data/poords4"')) `
+    'Toast icon is not published to the user data area.'
+Assert-True (-not $main.Contains('platformViews')) `
+    'Toast payload carries platformViews again.'
 Assert-True ($main.Contains('GAME_BRIDGE_ICON_PROBE_FILE') `
     -and $main.Contains('game_bridge_icon_probe_poll();')) `
     'Icon probe trigger is missing.'
@@ -100,7 +104,7 @@ Assert-True ($makefile.Contains('assets/poor_ds4_icon.h')) `
     'Bridge build does not depend on the embedded icon header.'
 Assert-True ($main.Contains('"%d controller active"')) `
     'Controller count toast does not use the short "N controller active" body.'
-Assert-True ($main.Contains('subMessage\":{\"body\":\"%s')) `
+Assert-True ($main.Contains('POORDS4_NOTIFY_TEMPLATE_SUB "%s"')) `
     'Toast sub message is not dynamic.'
 Assert-True ($main.Contains('game_bridge_notify_text(')) `
     'Toast builder does not expose an explicit sub message.'

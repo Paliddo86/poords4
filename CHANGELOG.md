@@ -21,9 +21,11 @@ something fails.
   `/data/poords4/verbose`, or are enabled automatically as soon as a session
   fails. The per-session report keeps the full telemetry.
 - **Notifications**: the count toast reads `N controller active` with the
-  triggering event as the small line under it, and uses a custom PoorDS4 icon
-  written to `/data/poords4/icon.png` (replaceable without rebuilding;
-  `/data/poords4/icon-probe` compares icon variants on the console).
+  triggering event as the small line under it, and uses the embedded PoorDS4
+  icon published to `/user/data/poords4/icon.png` (the notification overlay can
+  only read images from the user data area; replacing `/data/poords4/icon.png`
+  changes it without rebuilding). `/data/poords4/icon-probe` compares icon
+  variants on the console.
 - **Versioning**: artifacts are named `PoorDS4-v<version>.elf`, the startup
   banner logs `version=1.0.0`, and the external report field stays
   `poords4_rc` (numeric, `100` for 1.0.0).
@@ -33,6 +35,13 @@ something fails.
 - A DS4 on a second or third user profile is discovered automatically: the
   in-target rescan binds the login user number before probing and the reader
   refreshes its user lists once per game launch, so no manual reset is needed.
+- The toast icon renders again. The notification overlay only reads images from
+  the user data area, so the icon is published to
+  `/user/data/poords4/icon.png` and referenced from `rawData.viewData` only
+  (no `platformViews`), with `iconSize` and the timestamps of the reference
+  payload. A controller that appears while a game runs no longer needs the
+  reset combo: the reader reports a connected-but-unreadable DS4 and the
+  supervisor rebuilds the reader automatically (three attempts per episode).
 
 ## [0.1.0-rc77] - 2026-09-30
 

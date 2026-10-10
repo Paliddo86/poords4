@@ -39,6 +39,11 @@ extern int sceKernelGetAppInfo(pid_t pid, app_info_t *info);
 #define GAME_BRIDGE_LOCK_FILE  POORDS4_DATA_DIR "/game-pad-bridge-supervisor.lock"
 #define GAME_BRIDGE_STATE_FILE POORDS4_DATA_DIR "/game-pad-bridge-supervisor.txt"
 #define GAME_BRIDGE_ICON_FILE  POORDS4_DATA_DIR "/icon.png"
+/* The notification overlay can only read images from the user data area: a Url
+ * icon pointing at /data renders nothing (field evidence). This is also where
+ * ShadowMountPlus keeps its toast icon (/user/data/shadowmount/smp_icon.png). */
+#define POORDS4_ICON_DIR       "/user/data/poords4"
+#define POORDS4_ICON_FILE      POORDS4_ICON_DIR "/icon.png"
 #define GAME_BRIDGE_ICON_PROBE_FILE POORDS4_DATA_DIR "/icon-probe"
 #define GAME_BRIDGE_LAUNCH_GRACE_MS UINT64_C(1500)
 #define SOURCE_DISCONNECT_GRACE_MS  UINT64_C(1500)
@@ -625,25 +630,55 @@ copy_icon_to(const char *path)
     return 0;
 }
 
-/* The notification service loads the toast icon by path, so the embedded
- * PoorDS4 icon is materialised in the runtime data directory. A file that is
- * already there is left untouched, so the icon can be replaced without
- * rebuilding the payload. Returns the path, or NULL when it could not be
- * installed (the toast then uses the SDK sample icon). */
+/* Copies a file byte for byte (used to publish the icon where the notification
+ * overlay can read it). */
+static int
+copy_file(const char *from, const char *to)
+{
+    if (!from || !to)
+        return -1;
+    int source = open(from, O_RDONLY);
+    if (source < 0)
+        return -1;
+    int target = open(to, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (target < 0) {
+        close(source);
+        return -1;
+    }
+    char buffer[512];
+    ssize_t chunk;
+    int result = 0;
+    while ((chunk = read(source, buffer, sizeof(buffer))) > 0) {
+        if (write(target, buffer, (size_t)chunk) != chunk) {
+            result = -1;
+            break;
+        }
+    }
+    if (chunk < 0)
+        result = -1;
+    close(source);
+    close(target);
+    return result;
+}
+
+/* The notification overlay loads the toast icon by path from the user data
+ * area, so the embedded PoorDS4 icon is materialised there. /data/poords4/
+ * icon.png is the documented place to drop a replacement: whatever sits there
+ * is published to the overlay path on the next run, without rebuilding the
+ * payload. Returns the path the toast should reference, or NULL. */
 static const char *
 game_bridge_icon_path(void)
 {
+    mkdir(POORDS4_ICON_DIR, 0755);
     mkdir(POORDS4_DATA_DIR, 0755);
-    int fd = open(GAME_BRIDGE_ICON_FILE, O_RDONLY);
-    if (fd >= 0) {
-        close(fd);
-        return GAME_BRIDGE_ICON_FILE;
-    }
-    if (copy_icon_to(GAME_BRIDGE_ICON_FILE) != 0)
+    if (access(GAME_BRIDGE_ICON_FILE, F_OK) != 0 &&
+        copy_icon_to(GAME_BRIDGE_ICON_FILE) != 0)
+        return NULL;
+    if (copy_file(GAME_BRIDGE_ICON_FILE, POORDS4_ICON_FILE) != 0)
         return NULL;
     poords4_log("[PoorDS4] toast icon installed at %s (%u bytes)\n",
-                GAME_BRIDGE_ICON_FILE, (unsigned)POORDS4_ICON_PNG_SIZE);
-    return GAME_BRIDGE_ICON_FILE;
+                POORDS4_ICON_FILE, (unsigned)POORDS4_ICON_PNG_SIZE);
+    return POORDS4_ICON_FILE;
 }
 
 static void
@@ -690,13 +725,12 @@ game_bridge_escape_json(const char *source, char *out, size_t cap)
 #define POORDS4_NOTIFY_ICON_PREDEFINED(name) \
     "{\"type\":\"Predefined\",\"parameters\":{\"icon\":\"" name "\"}}"
 #define POORDS4_NOTIFY_ICON_URL \
-    "{\"type\":\"Url\",\"parameters\":{\"url\":\"" GAME_BRIDGE_ICON_FILE "\"}}"
+    "{\"type\":\"Url\",\"parameters\":{\"url\":\"" POORDS4_ICON_FILE \
+    "\",\"iconSize\":\"Square\"}}"
 
-/* The collapsed toast - the popup the user actually sees - only renders the
- * predefined icon set: a Url icon shows nothing there (field report). The
- * custom icon is therefore used in the expanded view and a predefined one in
- * the preview, the same split the SDK sample uses. */
-#define POORDS4_NOTIFY_PREVIEW_ICON POORDS4_NOTIFY_ICON_PREDEFINED("download")
+/* Fallback when the custom icon could not be published: a confirmed Predefined
+ * name (the overlay only renders the predefined set for icons it can resolve). */
+#define POORDS4_NOTIFY_ICON_FALLBACK POORDS4_NOTIFY_ICON_PREDEFINED("ps_user")
 
 #define POORDS4_NOTIFY_TEMPLATE_HEAD \
     "{\"rawData\":{\"viewTemplateType\":\"InteractiveToastTemplateB\"," \
@@ -708,14 +742,12 @@ game_bridge_escape_json(const char *source, char *out, size_t cap)
     ",\"message\":{\"body\":\""
 
 #define POORDS4_NOTIFY_TEMPLATE_SUB \
-    "\"},\"subMessage\":{\"body\":\"%s\"}}," \
-    "\"platformViews\":{\"previewDisabled\":{\"viewData\":{\"icon\":"
-
-#define POORDS4_NOTIFY_TEMPLATE_BODY \
-    ",\"message\":{\"body\":\""
+    "\"},\"subMessage\":{\"body\":\""
 
 #define POORDS4_NOTIFY_TEMPLATE_END \
-    "\"}}}}},\"createdDateTime\":\"2026-01-01T00:00:00.000Z\"," \
+    "\"}}},\"createdDateTime\":\"2026-01-01T00:00:00.000Z\"," \
+    "\"updatedDateTime\":\"2026-01-01T00:00:00.000Z\"," \
+    "\"expirationDateTime\":\"2026-01-01T01:00:00.000Z\"," \
     "\"localNotificationId\":\"%u\"}"
 
 /* Icon of the toast, resolved once on the first notification. */
@@ -727,34 +759,31 @@ game_bridge_notify_icon(void)
     if (!resolved) {
         resolved = 1;
         icon = game_bridge_icon_path() ?
-            POORDS4_NOTIFY_ICON_URL :
-            POORDS4_NOTIFY_ICON_PREDEFINED("download");
+            POORDS4_NOTIFY_ICON_URL : POORDS4_NOTIFY_ICON_FALLBACK;
     }
     return icon;
 }
 
 static int
 game_bridge_notify_full(const char *message, const char *sub_message,
-                        const char *view_icon, const char *preview_icon)
+                        const char *icon)
 {
     static unsigned notify_serial;
     char body[192];
     char sub[128];
     char payload[1024];
-    if (!message || !view_icon || !preview_icon)
+    if (!message || !icon)
         return 0;
     game_bridge_escape_json(message, body, sizeof(body));
     game_bridge_escape_json(sub_message, sub, sizeof(sub));
     notify_serial++;
     int length = snprintf(
         payload, sizeof(payload),
-        POORDS4_NOTIFY_TEMPLATE_HEAD "%s"      /* viewData icon */
-        POORDS4_NOTIFY_TEMPLATE_MID "%s"       /* main body */
-        POORDS4_NOTIFY_TEMPLATE_SUB            /* small line under it */
-        "%s"                                   /* preview icon */
-        POORDS4_NOTIFY_TEMPLATE_BODY "%s"      /* preview body */
+        POORDS4_NOTIFY_TEMPLATE_HEAD "%s"   /* icon */
+        POORDS4_NOTIFY_TEMPLATE_MID "%s"    /* main body */
+        POORDS4_NOTIFY_TEMPLATE_SUB "%s"    /* small line under it */
         POORDS4_NOTIFY_TEMPLATE_END,
-        view_icon, body, sub, preview_icon, body, 900000u + notify_serial);
+        icon, body, sub, 900000u + notify_serial);
     if (length <= 0 || (size_t)length >= sizeof(payload))
         return 0;
     int result = sceNotificationSend(0xfe /* system */, 1, payload);
@@ -777,8 +806,7 @@ game_bridge_notify_native_with_icon(const char *message,
                                     const char *sub_message,
                                     const char *icon)
 {
-    return game_bridge_notify_full(
-        message, sub_message, icon, POORDS4_NOTIFY_PREVIEW_ICON);
+    return game_bridge_notify_full(message, sub_message, icon);
 }
 
 /* Sends a toast whose small line under the main one is explicit. */
@@ -808,56 +836,45 @@ game_bridge_notify(const char *message)
 static void
 game_bridge_icon_probe(void)
 {
-    /* Extra copies so the probe can tell whether the service simply cannot read
-     * the data directory. */
-    (void)copy_icon_to(GAME_BRIDGE_ICON_FILE);
+    /* Publish the icon where the notification overlay can read it, and keep the
+     * extra copies the probe compares. */
+    (void)game_bridge_icon_path();
     (void)copy_icon_to("/tmp/poor_ds4_icon.png");
     static const char *const labels[] = {
-        "custom icon in both views",
-        "custom view + predefined preview",
-        "custom icon with file:// scheme",
-        "custom icon from /tmp",
+        "Url /user/data (expected)",
+        "Url /data (older, no icon)",
+        "Url file:// /user/data",
+        "Url /tmp",
+        "predefined ps_user",
+        "predefined system",
         "predefined download",
-        "predefined game",
-        "predefined trophy",
-        "predefined usb",
-        "predefined network",
-        "predefined camera",
+        "predefined messages",
+        "predefined headset",
+        "predefined trophies",
     };
-    static const char *const views[] = {
+    static const char *const icons[] = {
         POORDS4_NOTIFY_ICON_URL,
-        POORDS4_NOTIFY_ICON_URL,
+        "{\"type\":\"Url\",\"parameters\":{\"url\":\""
+            GAME_BRIDGE_ICON_FILE "\",\"iconSize\":\"Square\"}}",
         "{\"type\":\"Url\",\"parameters\":{\"url\":\"file://"
-            GAME_BRIDGE_ICON_FILE "\"}}",
-        "{\"type\":\"Url\",\"parameters\":{\"url\":\"/tmp/poor_ds4_icon.png\"}}",
+            POORDS4_ICON_FILE "\",\"iconSize\":\"Square\"}}",
+        "{\"type\":\"Url\",\"parameters\":{\"url\":\"/tmp/poor_ds4_icon.png\""
+            ",\"iconSize\":\"Square\"}}",
+        POORDS4_NOTIFY_ICON_PREDEFINED("ps_user"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("system"),
         POORDS4_NOTIFY_ICON_PREDEFINED("download"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("game"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("trophy"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("usb"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("network"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("camera"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("messages"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("headset"),
+        POORDS4_NOTIFY_ICON_PREDEFINED("trophies"),
     };
-    static const char *const previews[] = {
-        POORDS4_NOTIFY_ICON_URL,
-        POORDS4_NOTIFY_PREVIEW_ICON,
-        "{\"type\":\"Url\",\"parameters\":{\"url\":\"file://"
-            GAME_BRIDGE_ICON_FILE "\"}}",
-        "{\"type\":\"Url\",\"parameters\":{\"url\":\"/tmp/poor_ds4_icon.png\"}}",
-        POORDS4_NOTIFY_ICON_PREDEFINED("download"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("game"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("trophy"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("usb"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("network"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("camera"),
-    };
-    const unsigned total = (unsigned)(sizeof(views) / sizeof(views[0]));
+    const unsigned total = (unsigned)(sizeof(icons) / sizeof(icons[0]));
     for (unsigned index = 0; index < total; ++index) {
         char message[96];
         snprintf(message, sizeof(message),
                  "PoorDS4 icon test %u/%u: %s", index + 1u, total,
                  labels[index]);
         int ok = game_bridge_notify_full(message, "PoorDS4 icon test",
-                                         views[index], previews[index]);
+                                         icons[index]);
         /* Always logged: this line is what tells us remotely which variant was
          * sent and whether the service accepted it. */
         poords4_log("[PoorDS4] icon probe %u/%u ok=%d %s\n",

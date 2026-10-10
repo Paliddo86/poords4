@@ -13,10 +13,10 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCE = os.path.join(ROOT, "payload", "game_pad_bridge_main.c")
-DEFINES = ("GAME_BRIDGE_ICON_FILE", "POORDS4_DATA_DIR")
+DEFINES = ("GAME_BRIDGE_ICON_FILE", "POORDS4_ICON_FILE", "POORDS4_ICON_DIR",
+           "POORDS4_DATA_DIR")
 MACROS = ("POORDS4_NOTIFY_TEMPLATE_HEAD", "POORDS4_NOTIFY_TEMPLATE_MID",
-          "POORDS4_NOTIFY_TEMPLATE_SUB", "POORDS4_NOTIFY_TEMPLATE_BODY",
-          "POORDS4_NOTIFY_TEMPLATE_END")
+          "POORDS4_NOTIFY_TEMPLATE_SUB", "POORDS4_NOTIFY_TEMPLATE_END")
 
 
 def fail(message):
@@ -63,30 +63,19 @@ def macro_text(text, name):
     return match.group(1).replace("\\\n", "\n")
 
 
-def preview_icon_spec(text):
-    """Resolve POORDS4_NOTIFY_PREVIEW_ICON: the collapsed toast only renders
-    predefined icons, so it is a Predefined spec resolved from the define."""
-    body = define_body(text, "POORDS4_NOTIFY_PREVIEW_ICON")
-    match = re.search(r'POORDS4_NOTIFY_ICON_PREDEFINED\("([^"]+)"\)', body)
-    if not match:
-        fail(f"unexpected preview icon define {body!r}")
-    name = match.group(1)
-    return f'{{"type":"Predefined","parameters":{{"icon":"{name}"}}}}', name
-
-
-def build_payload(text, view_icon, body, sub_message, preview_icon):
+def build_payload(text, icon, body, sub_message):
     # Mirrors the snprintf() in game_bridge_notify_full(): the macros are
-    # separated by placeholders and SUB carries one of its own for the small
-    # line, so the argument order is view icon, body, sub, preview icon, body.
+    # separated by the three placeholders (icon, body, sub message) and the
+    # template ends with the %u notification serial.
     template = ""
     for name in MACROS:
         if template:
             template += "%s"
         template += expand(text, macro_text(text, name))
-    values = [view_icon, body, sub_message, preview_icon, body]
+    values = [icon, body, sub_message]
     parts = template.split("%s")
     if len(parts) != len(values) + 1:
-        fail(f"template has {len(parts) - 1} %s placeholders, expected 5")
+        fail(f"template has {len(parts) - 1} %s placeholders, expected 3")
     out = ""
     for index, part in enumerate(parts):
         out += part
@@ -99,7 +88,10 @@ def check(text):
     icon = expand(text, macro_text(text, "POORDS4_NOTIFY_ICON_URL"))
     if not icon.startswith('{"type":"Url"'):
         fail(f"unexpected icon spec {icon!r}")
-    preview_icon, preview_name = preview_icon_spec(text)
+    if "/user/data/poords4/icon.png" not in icon:
+        fail("Url icon does not point at the user data area")
+    if '"iconSize"' not in icon:
+        fail("Url icon does not carry iconSize")
     cases = [
         ("3 controller active", "wireless DS4 ready; waiting for a PS5 game"),
         ("3 controller active", "wireless DS4 active in the PS5 game"),
@@ -107,37 +99,36 @@ def check(text):
         ("PoorDS4: reset requested via controller shortcut", "PoorDS4"),
     ]
     for body, sub in cases:
-        payload = build_payload(text, icon, body, sub, preview_icon)
+        payload = build_payload(text, icon, body, sub)
         try:
             parsed = json.loads(payload)
         except json.JSONDecodeError as error:
             fail(f"payload is not valid JSON ({error}); payload={payload}")
         view = parsed.get("rawData", {}).get("viewData", {})
-        preview = (parsed.get("rawData", {}).get("platformViews", {})
-                   .get("previewDisabled", {}).get("viewData", {}))
         checks = [
             (view.get("icon", {}).get("type") == "Url",
              "rawData.viewData.icon is not the Url icon"),
+            (view.get("icon", {}).get("parameters", {}).get("iconSize") ==
+             "Square", "Url icon lost its iconSize"),
             (view.get("message", {}).get("body") == body,
              "rawData.viewData.message.body does not carry the message"),
             (view.get("subMessage", {}).get("body") == sub,
              "rawData.viewData.subMessage.body does not carry the event"),
-            (preview.get("icon", {}).get("type") == "Predefined",
-             "collapsed toast icon is not a predefined one"),
-            (preview.get("icon", {}).get("parameters", {}).get("icon") ==
-             preview_name, "collapsed toast icon name is wrong"),
-            (preview.get("message", {}).get("body") == body,
-             "platformViews.previewDisabled.viewData.message.body is wrong"),
+            ("platformViews" not in parsed.get("rawData", {}),
+             "payload still carries platformViews"),
             (parsed.get("createdDateTime") is not None,
              "createdDateTime is missing"),
+            (parsed.get("updatedDateTime") is not None,
+             "updatedDateTime is missing"),
+            (parsed.get("expirationDateTime") is not None,
+             "expirationDateTime is missing"),
             (parsed.get("localNotificationId") == "900001",
              "localNotificationId is missing"),
         ]
         for ok, message in checks:
             if not ok:
                 fail(message)
-        print(f"ok: {len(payload)} bytes, body={body!r}, sub={sub!r}, "
-              f"preview={preview_name}")
+        print(f"ok: {len(payload)} bytes, body={body!r}, sub={sub!r}")
 
 
 def main():

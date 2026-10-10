@@ -170,14 +170,15 @@ on by itself as soon as something fails, so a session that breaks is captured
 automatically. `game-pad-bridge-last.txt` and `reports/` keep the full
 telemetry in every case.
 
-Notifications are native system toasts only. The icon comes from the payload
-itself: it is written to `/data/poords4/icon.png` on first use, and replacing
-that file changes the icon without rebuilding the payload. The collapsed popup
-only renders the predefined icon set the console ships, so the custom icon is
-used in the expanded view and a predefined one in the popup. Creating
-`/data/poords4/icon-probe` sends one toast per icon variant (custom icon in
-both views, custom with a predefined popup, `file://` scheme, a `/tmp` copy and
-several predefined names) so the rendering can be compared on the console.
+Notifications are native system toasts only. The toast icon is the embedded
+PoorDS4 icon: it is published to `/user/data/poords4/icon.png`, the only area
+the notification overlay can read images from. Drop a replacement at
+`/data/poords4/icon.png` to change the icon without rebuilding the payload: the
+file is copied to the overlay path on the next start. If the icon cannot be
+published, the toast falls back to a predefined system icon. Creating
+`/data/poords4/icon-probe` sends one toast per icon variant (both icon
+locations, a `file://` form, a `/tmp` copy and six predefined names) and logs
+the result of each, so the rendering can be compared on the console.
 
 ## Multi-Controller Support (Experimental)
 
