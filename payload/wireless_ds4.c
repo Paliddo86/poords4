@@ -457,6 +457,24 @@ get_lib_quiet(pid_t pid, const char *name, uint32_t *handle)
     return result == 0 && *handle != 0 ? 0 : -1;
 }
 
+/* Resolves the kernel's native log sink inside the calling process. It is the
+ * sink the SDK's klog_printf writes to, but resolving it at runtime keeps it
+ * out of the ELF symbol table: a firmware without this export then simply
+ * reports "unavailable" instead of refusing to load the payload. */
+intptr_t
+wireless_ds4_native_log_resolve(void)
+{
+    pid_t self = getpid();
+    uint32_t handle = 0;
+    if (get_lib_quiet(self, "libkernel_web", &handle) != 0 &&
+        get_lib_quiet(self, "libkernel", &handle) != 0)
+        return 0;
+    intptr_t sink = resolve_sym(self, handle, "sceKernelDebugOutText");
+    if (!sink)
+        sink = resolve_sym(self, handle, "sceKernelDebugOutText2");
+    return sink;
+}
+
 /* pt_io_write - write process memory via PT_IO (process must be stopped) */
 static int
 pt_io_write(pid_t pid, intptr_t dst, const void *src, size_t len)

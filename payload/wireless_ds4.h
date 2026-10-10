@@ -33,6 +33,11 @@ int wireless_ds4_remote_reader_stop(pid_t pid, intptr_t args_address);
  * primary bridged controller. Pass -1 when there is no active user. */
 void wireless_ds4_set_foreground_user(int32_t user_id);
 
+/* Resolves the kernel's native log sink (sceKernelDebugOutText) inside the
+ * calling process, or 0 when this firmware does not export it. Resolved at
+ * runtime so no symbol is imported at load time. */
+intptr_t wireless_ds4_native_log_resolve(void);
+
 typedef struct {
     int32_t ready;
     int32_t stop;

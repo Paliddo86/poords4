@@ -1,6 +1,6 @@
 PS5_HOST ?=
 PORT     ?= 9021
-RC_VERSION := 74
+RC_VERSION := 75
 
 TARGET        := PoorDS4rc$(RC_VERSION).elf
 EXP_TARGET    := PoorDS4exp.elf
@@ -23,7 +23,7 @@ CFLAGS  += -D__PROSPERO__ -Wall -Wextra -Wshadow -Wunreachable-code \
 	-fdebug-compilation-dir=.
 LDFLAGS      += -Wl,--gc-sections,--build-id=sha1
 RUNTIME_LIBS := -nodefaultlibs -lc -lkernel_web -lSceLibcInternal
-BRIDGE_LIBS  := $(RUNTIME_LIBS) -lSceUserService
+BRIDGE_LIBS  := $(RUNTIME_LIBS) -lSceUserService -lSceNotification
 
 .PHONY: all audit clean deploy release status stop
 

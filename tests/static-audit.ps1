@@ -16,8 +16,8 @@ $bridge = [IO.File]::ReadAllText(
 $makefile = [IO.File]::ReadAllText(
     (Join-Path $repo 'payload/Makefile'))
 
-Assert-True ($makefile.Contains('RC_VERSION := 74')) `
-    'Makefile RC version is not 74.'
+Assert-True ($makefile.Contains('RC_VERSION := 75')) `
+    'Makefile RC version is not 75.'
 Assert-True (-not $makefile.Contains('-lScePad')) `
     'Build still links libScePad despite using runtime-resolved game exports.'
 Assert-True (-not $makefile.Contains('-lpthread')) `
@@ -28,7 +28,7 @@ Assert-True ($makefile.Contains(
     'RUNTIME_LIBS := -nodefaultlibs -lc -lkernel_web -lSceLibcInternal')) `
     'Build does not declare its minimal SDK runtime dependencies.'
 Assert-True ($makefile.Contains(
-    'BRIDGE_LIBS  := $(RUNTIME_LIBS) -lSceUserService')) `
+    'BRIDGE_LIBS  := $(RUNTIME_LIBS) -lSceUserService -lSceNotification')) `
     'Automatic payload is missing its direct user-service dependency.'
 Assert-True ($makefile.Contains(
     '$(STRIP) --strip-debug $(TARGET) $(STATUS_TARGET) $(STOP_TARGET)')) `

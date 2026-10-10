@@ -3,10 +3,51 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc75] - 2026-09-30
+
+### Changed
+
+- **Notifications are now native system toasts**: `game_bridge_notify()` first
+  sends the message through `sceNotificationSend()` (libSceNotification), i.e.
+  the same interactive toast template the console uses for its own messages
+  (icon, title, body), and only falls back to the plain
+  `sceKernelSendNotificationRequest()` "debug" popup when the native call is
+  rejected, logging the result of both paths.
+  - The JSON body is built from the template of the SDK sample
+    (`InteractiveToastTemplateB`, channel `Downloads`, `priority` 100) with the
+    message in `viewData.message.body` and in the non-interactive
+    `platformViews.previewDisabled` view, `PoorDS4` as sub message, and a unique
+    `localNotificationId` per toast. Characters that would break the JSON
+    (`"`, `\`, control bytes) are replaced in the body.
+  - Verified by parsing the template extracted from the built ELF with a JSON
+    parser (13/13 braces, top-level keys `rawData`/`createdDateTime`/
+    `localNotificationId`); a missing brace was caught and fixed this way.
+  - `BRIDGE_LIBS` gained `-lSceNotification`, so the loader makes the module
+    available (`NEEDED libSceNotification.sprx`). This is the only new load
+    time dependency; the `status` and `stop` payloads keep the minimal
+    `RUNTIME_LIBS` set, so removing `-lSceNotification` from `BRIDGE_LIBS` in
+    `payload/Makefile` is a one-line revert if a firmware rejects it.
+- The debug log is unchanged; the rc74 native klog mirror of the counter lines
+  is kept (additive, easy to drop).
+
 ## [0.1.0-rc74] - 2026-09-30
 
 ### Added
 
+- **Counter lines in the console's native log (klog)**: the native sink
+  (`sceKernelDebugOutText`, the same one the SDK's `klog_printf` writes to) was
+  never used because the payload redirects `klog_printf` to its own debug file.
+  It is now resolved at runtime inside the payload's own process
+  (`wireless_ds4_native_log_resolve()`), so **nothing is imported at load
+  time** (verified: the symbol is absent from the ELF dynamic symbol table) and
+  a firmware without the export simply logs `native klog sink=unavailable`.
+  `announce_ds4_count()` writes every count to both the console notification
+  and the native log:
+  - `[PoorDS4] rc=74 native klog sink=online` at startup,
+  - `[PoorDS4] wireless DS4 ready: N DS4 detected and associated`,
+  - `[PoorDS4] wireless DS4 active in the PS5 game: N DS4 detected and associated`,
+  - `[PoorDS4] wireless DS4 now bridged: N DS4 detected and associated` whenever
+    a controller is added or removed while a game is running.
 - **Automatic pad discovery (no more reset shortcut needed)**: the reader
   thread, which already runs inside RemotePlay, now re-probes the candidate
   users every ~3 s (`POORDS4_READER_RESCAN_LOOPS`) and places a connected DS4

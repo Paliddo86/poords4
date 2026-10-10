@@ -522,6 +522,8 @@ extern int32_t sceUserServiceGetUserName(
     int32_t user_id, char *user_name, size_t size);
 extern int32_t sceKernelSendNotificationRequest(
     int unk0, void *request, size_t size, int unk1);
+extern int sceNotificationSend(int user_id, int is_logged,
+                               const char *payload);
 
 typedef struct {
     char unknown[45];
@@ -577,7 +579,7 @@ poords4_log(const char *format, ...)
 }
 
 static void
-game_bridge_notify(const char *message)
+game_bridge_notify_kernel(const char *message)
 {
     GameBridgeNotifyRequest request;
     memset(&request, 0, sizeof(request));
@@ -588,6 +590,69 @@ game_bridge_notify(const char *message)
     poords4_log(
         "[PoorDS4] notification result=0x%08x message=%s\n",
         (uint32_t)result, message ? message : "");
+}
+
+/* Native system notification: the interactive toast template the console uses
+ * for its own messages (icon, title, body) instead of the plain kernel
+ * notification above. Keeps every character that would break the JSON payload
+ * out of the body, and falls back to the kernel notification when the native
+ * call is rejected. */
+#define POORDS4_NOTIFY_TEMPLATE_HEAD \
+    "{\"rawData\":{\"viewTemplateType\":\"InteractiveToastTemplateB\"," \
+    "\"channelType\":\"Downloads\",\"useCaseId\":\"IDC\"," \
+    "\"toastOverwriteType\":\"No\",\"isImmediate\":true,\"priority\":100," \
+    "\"viewData\":{" \
+    "\"icon\":{\"type\":\"Predefined\",\"parameters\":{\"icon\":\"download\"}}," \
+    "\"message\":{\"body\":\""
+
+#define POORDS4_NOTIFY_TEMPLATE_TAIL \
+    "\"},\"subMessage\":{\"body\":\"PoorDS4\"}}," \
+    "\"platformViews\":{\"previewDisabled\":{\"viewData\":{" \
+    "\"icon\":{\"type\":\"Predefined\",\"parameters\":{\"icon\":\"download\"}}," \
+    "\"message\":{\"body\":\""
+
+static int
+game_bridge_notify_native(const char *message)
+{
+    static unsigned notify_serial;
+    char body[192];
+    char payload[1024];
+    if (!message)
+        return 0;
+    size_t index = 0;
+    for (; message[index] != 0 && index + 1u < sizeof(body); ++index) {
+        char letter = message[index];
+        if (letter == '"' || letter == '\\' ||
+            (unsigned char)letter < 0x20u)
+            letter = '\'';
+        body[index] = letter;
+    }
+    body[index] = 0;
+    notify_serial++;
+    int length = snprintf(
+        payload, sizeof(payload),
+        POORDS4_NOTIFY_TEMPLATE_HEAD "%s"
+        POORDS4_NOTIFY_TEMPLATE_TAIL "%s"
+        "\"}}}}},\"createdDateTime\":\"2026-01-01T00:00:00.000Z\","
+        "\"localNotificationId\":\"%u\"}",
+        body, body, 900000u + notify_serial);
+    if (length <= 0 || (size_t)length >= sizeof(payload))
+        return 0;
+    int result = sceNotificationSend(0xfe /* system */, 1, payload);
+    poords4_log(
+        "[PoorDS4] native notification result=0x%08x message=%s\n",
+        (uint32_t)result, message);
+    return result == 0 ? 1 : 0;
+}
+
+/* Sends the message as a native system toast when possible, falling back to the
+ * kernel notification otherwise. */
+static void
+game_bridge_notify(const char *message)
+{
+    if (game_bridge_notify_native(message))
+        return;
+    game_bridge_notify_kernel(message);
 }
 
 /* Reports how many wireless DS4 the reader detected and associated with a
@@ -603,6 +668,42 @@ notify_with_ds4_count(const char *prefix, const char *suffix,
              "PoorDS4: %s (%d DS4 detected and associated)%s",
              prefix ? prefix : "", count, suffix ? suffix : "");
     game_bridge_notify(message);
+}
+
+/* Native kernel log (klog) sink of this process, resolved once at startup.
+ * Counter lines are then visible in the console's own log even when the
+ * /data/poords4 log file is not being pulled. 0 when the firmware does not
+ * export the sink. */
+static intptr_t g_native_log_sink;
+
+static void
+native_log_line(const char *message)
+{
+    typedef int (*debug_out_fn_t)(const char *);
+    if (!g_native_log_sink || !message)
+        return;
+    debug_out_fn_t debug_out = (debug_out_fn_t)(uintptr_t)g_native_log_sink;
+    (void)debug_out(message);
+}
+
+static void
+native_log_ds4_count(const char *what, int32_t ds4_count)
+{
+    char message[128];
+    int count = ds4_count > 0 ? (int)ds4_count : 0;
+    snprintf(message, sizeof(message),
+             "[PoorDS4] %s: %d DS4 detected and associated\n",
+             what ? what : "-", count);
+    native_log_line(message);
+}
+
+/* Announces the controller count both as a console notification and in the
+ * native log, so it is readable without pulling the debug log. */
+static void
+announce_ds4_count(const char *prefix, const char *suffix, int32_t ds4_count)
+{
+    notify_with_ds4_count(prefix, suffix, ds4_count);
+    native_log_ds4_count(prefix, ds4_count);
 }
 
 typedef enum {
@@ -1063,10 +1164,18 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
     }
     {
         uint32_t newly_fed = current_fed_mask & ~s_prev_fed_mask;
-        if ((newly_fed & ~1u) != 0u)
+        uint32_t newly_unfed = s_prev_fed_mask & ~current_fed_mask;
+        if (s_prev_fed_mask != 0u &&
+            ((newly_fed | newly_unfed) & ~1u) != 0u) {
+            unsigned fed = 0;
+            for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s)
+                if (current_fed_mask & (1u << s))
+                    fed++;
             poords4_log(
-                "[PoorDS4] automatic discovery: slot mask=0x%08x now "
-                "feeding the game\n", newly_fed);
+                "[PoorDS4] automatic discovery: fed mask=0x%08x now "
+                "slot mask=0x%08x\n", newly_fed, current_fed_mask);
+            announce_ds4_count("wireless DS4 now bridged", "", (int32_t)fed);
+        }
     }
     s_prev_fed_mask = current_fed_mask;
 }
@@ -1885,6 +1994,15 @@ main(void)
     poords4_log(
         "[PoorDS4] game bridge start rc=%d auto_watch=%d\n",
         POORDS4_RC_VERSION, POORDS4_AUTO_WATCH);
+    g_native_log_sink = wireless_ds4_native_log_resolve();
+    {
+        char message[128];
+        snprintf(message, sizeof(message),
+                 "[PoorDS4] rc=%d native klog sink=%s\n",
+                 POORDS4_RC_VERSION,
+                 g_native_log_sink ? "online" : "unavailable");
+        native_log_line(message);
+    }
     /* The DS4 count is only known after the reader has run its discovery, so
      * this first toast stays generic. */
     game_bridge_notify(
@@ -1900,8 +2018,8 @@ main(void)
      * when the user stops it before launching a game. */
     exit_code = 0;
     write_supervisor_state("waiting_for_game", -1, 0, 0, 1);
-    notify_with_ds4_count("wireless DS4 ready",
-                          "; waiting for a PS5 game", g_pad_source.ds4_count);
+    announce_ds4_count("wireless DS4 ready",
+                       "; waiting for a PS5 game", g_pad_source.ds4_count);
 
     pid_t launch_candidate_pid = -1;
     uint64_t launch_candidate_since_ms = 0;
@@ -2232,8 +2350,8 @@ main(void)
             "session=%u\n",
             reader_pid, (unsigned long)reader_args,
             game_pid, (unsigned long)bridge_args, sessions);
-        notify_with_ds4_count("wireless DS4 active in the PS5 game", "",
-                              g_pad_source.ds4_count);
+        announce_ds4_count("wireless DS4 active in the PS5 game", "",
+                           g_pad_source.ds4_count);
         GameSessionEndReason end_reason = SESSION_END_STOP_REQUESTED;
         for (;;) {
             unsigned session_output_frames = run_game_session(
