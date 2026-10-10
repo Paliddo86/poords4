@@ -3,6 +3,54 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc72] - 2026-09-30
+
+### Fixed
+
+- **User list now comes from the user service of the attached process**:
+  - The rc71 client-table enumeration was confirmed useless: the table only
+    lists pads *that process* has already opened, so `pad table users n=0`
+    appeared in every discovery cycle. It has been removed.
+  - The reader now resolves `sceUserServiceGetLoginUserIdList` and
+    `sceUserServiceGetRegisteredUserIdList` **inside RemotePlay** (dynamic
+    resolution, nothing linked) and merges those ids after the supervisor
+    candidates, so the pad ordinals of the already known users do not move.
+  - `scePadGetUsersWithPads` does not exist on this firmware: the libScePad
+    export table has no such symbol and the rc71 runtime probe resolved it to
+    0. It was replaced by real diagnostics.
+
+### Added
+
+- **Diagnostics for the "second DS4 is not bridged" case**:
+  - `pad is-ds4-connected by_user=0x...` per candidate user, using
+    `scePadIsDS4Connected()` with the user id (the handle-based result is
+    already logged).
+  - `pad get-info result=0x... copy=... data=<32 bytes>` from
+    `scePadGetInfo()`, so the pad count libScePad itself reports is visible.
+    The second argument also points at the scratch buffer, so a variant that
+    expects an out parameter cannot dereference a null pointer.
+  - `pad controller-info user=0x... call=0x... copy=... data=<32 bytes>` for
+    every candidate handle, i.e. libScePad's own connection/class fields
+    (`scePadGetControllerInformation`, ABI already verified on this firmware).
+  - `pad alt-type user=0x... type=1..3 handle=... device=...` when the default
+    pad type reports no device, so a pad served behind a different type is
+    found instead of silently skipped.
+  - `remote user login/registered call=... ids=...` for the user lists read in
+    the attached process.
+
+### Analysis of the rc71 test logs
+
+- All three logged-in users (`0x…483`/`0x…485`/`0x…484`) were probed, and the
+  `reader bind` calls succeeded with `result=0x0`.
+- libScePad exposed exactly one DualSense (`054c:0ce6`, user `0x…483`) and one
+  DS4 (`054c:0x05c4`, user `0x…484`) in all 277 discovery cycles. User
+  `0x…485`'s pad always opened (`opened=1`) but never reported a device
+  (`state_connected=0`, `device_id=0xffffffff`), and `scePadGetHandle` always
+  returned `0x80920008`.
+- Opening index 1..7 of a user always returns `0x809b0003`: libScePad serves
+  one pad per user, so the second DS4 must be *assigned* to its own user for
+  PoorDS4 (or any other process) to see it.
+
 ## [0.1.0-rc71] - 2026-09-30
 
 ### Fixed

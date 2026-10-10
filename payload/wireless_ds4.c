@@ -190,8 +190,13 @@ static int __attribute__((unused)) remote_pad_identity_1160(
     int32_t *out_connected, uint16_t *out_vendor, uint16_t *out_product);
 static int remote_pad_is_known_ds4(
     int32_t connected, uint16_t vendor, uint16_t product);
-static unsigned remote_pad_table_users(
-    pid_t pid, intptr_t libpad_base, int32_t *out_users, unsigned max_users);
+static int remote_user_list(
+    pid_t target, intptr_t trap_mem, intptr_t fn_list, intptr_t scratch,
+    int32_t out_users[4], int64_t *out_call);
+static uint32_t merge_user_ids(
+    const int32_t *source, uint32_t source_count, int32_t *candidate_ids,
+    int32_t *candidate_numbers, uint32_t candidate_count,
+    uint32_t max_candidates);
 static int g_report_archive_fd = -1;
 
 /* Firmware admission evidence captured from the already-safe RemotePlay
@@ -2558,12 +2563,13 @@ wireless_ds4_remote_reader_start(
         goto cleanup;
 
     uint32_t libpad_h = 0, libkernel_h = 0, libpthread_h = 0;
-    uint32_t liblibc_h = 0;
+    uint32_t liblibc_h = 0, libuser_h = 0;
     get_lib(target, "libScePad", &libpad_h);
     if (get_lib(target, "libkernel_sys", &libkernel_h) != 0)
         (void)get_lib(target, "libkernel", &libkernel_h);
     get_lib(target, "libpthread", &libpthread_h);
     get_lib(target, "libSceLibcInternal", &liblibc_h);
+    get_lib(target, "libSceUserService", &libuser_h);
 
     intptr_t fn_gethandle = libpad_h
         ? resolve_sym(target, libpad_h, "scePadGetHandle") : 0;
@@ -2596,6 +2602,17 @@ wireless_ds4_remote_reader_start(
         ? resolve_sym(target, libpad_h, "scePadSetLoginUserNumber") : 0;
     intptr_t fn_setfocus = libpad_h
         ? resolve_sym(target, libpad_h, "scePadSetProcessFocus") : 0;
+    intptr_t fn_getinfo = libpad_h
+        ? resolve_sym(target, libpad_h, "scePadGetInfo") : 0;
+    /* The user lists are resolved in RemotePlay instead of being linked into
+     * PoorDS4, so no symbol is imported at load time and a firmware without
+     * these entry points can never stop the payload from loading. */
+    intptr_t fn_login_user_list = libuser_h
+        ? resolve_sym(target, libuser_h, "sceUserServiceGetLoginUserIdList")
+        : 0;
+    intptr_t fn_registered_user_list = libuser_h
+        ? resolve_sym(
+            target, libuser_h, "sceUserServiceGetRegisteredUserIdList") : 0;
     intptr_t fn_usleep = libkernel_h
         ? resolve_sym(target, libkernel_h, "usleep") : 0;
     intptr_t fn_pthread_create = libkernel_h
@@ -2635,12 +2652,10 @@ wireless_ds4_remote_reader_start(
     uint32_t firmware = kernel_get_fw_version();
     intptr_t libpad_base = libpad_h
         ? kernel_dynlib_mapbase_addr(target, libpad_h) : 0;
-    /* Zero-risk probe: does the firmware export a "users with pads" accessor?
-     * The symbol is only resolved, never called, so a wrong guess cannot
-     * crash; when present it can replace the client-table read in a later
-     * revision. */
-    intptr_t fn_users_with_pads = libpad_h
-        ? resolve_sym(target, libpad_h, "scePadGetUsersWithPads") : 0;
+    /* RC71 probed scePadGetUsersWithPads here. The libScePad export table has
+     * no such symbol and firmware resolution returns 0, so no "users with
+     * pads" accessor exists on this firmware; the user ids come from the two
+     * user service lists resolved above instead. */
 
     klog_printf("[PoorDS4] reader symbols: get=0x%lx open=0x%lx "
                 "close=0x%lx isds4=0x%lx deviceid=0x%lx "
@@ -2649,14 +2664,15 @@ wireless_ds4_remote_reader_start(
                 "kill=0x%lx malloc=0x%lx setpriv=0x%lx "
                 "setlogin=0x%lx setfocus=0x%lx "
                 "trap=0x%lx base=0x%lx fw=0x%08x "
-                "userswithpads=0x%lx\n",
+                "getinfo=0x%lx userlist=0x%lx registeredlist=0x%lx\n",
                 fn_gethandle, fn_open, fn_closepad, fn_isds4,
                 fn_getdeviceid, fn_getdeviceinfo,
                 fn_readstate, fn_usleep,
                 fn_pthread_create, fn_pthread_detach, fn_kill,
                 fn_malloc, fn_setpriv, fn_setloginuser,
                 fn_setfocus, trap_mem,
-                libpad_base, firmware, fn_users_with_pads);
+                libpad_base, firmware, fn_getinfo,
+                fn_login_user_list, fn_registered_user_list);
     {
         (void)mkdir("/data/poords4/reports", 0755);
         char source_report_path[160];
@@ -2812,8 +2828,11 @@ wireless_ds4_remote_reader_start(
     memset(multi_opened, 0, sizeof(multi_opened));
     memset(multi_users, 0xff, sizeof(multi_users));
     memset(multi_numbers, 0xff, sizeof(multi_numbers));
-    /* Candidate users: the supervisor list merged with every user id found in
-     * libScePad's own client table, which lists all assigned pads. */
+    /* Candidate users: the supervisor list (foreground plus login users) and
+     * then the user ids RemotePlay itself reports. RC71 also enumerated the
+     * libScePad client table here, but that table only lists the pads this
+     * very process has already opened, so it was empty during discovery
+     * (n=0 in every cycle) and the enumeration has been removed. */
     int32_t candidate_ids[POORDS4_MAX_USER_CANDIDATES];
     int32_t candidate_numbers[POORDS4_MAX_USER_CANDIDATES];
     uint32_t candidate_count = 0;
@@ -2830,25 +2849,41 @@ wireless_ds4_remote_reader_start(
         candidate_count++;
     }
     {
-        int32_t table_users[POORDS4_MAX_USER_CANDIDATES];
-        memset(table_users, 0xff, sizeof(table_users));
-        unsigned table_count = remote_pad_table_users(
-            target, libpad_base, table_users, POORDS4_MAX_USER_CANDIDATES);
-        klog_printf("[PoorDS4] pad table users n=%u\n", table_count);
-        for (unsigned table_index = 0; table_index < table_count;
-             ++table_index) {
-            int already_listed = 0;
-            for (uint32_t merge_index = 0; merge_index < candidate_count;
-                 ++merge_index)
-                if (candidate_ids[merge_index] == table_users[table_index])
-                    already_listed = 1;
-            if (!already_listed &&
-                candidate_count < POORDS4_MAX_USER_CANDIDATES) {
-                candidate_ids[candidate_count] = table_users[table_index];
-                candidate_numbers[candidate_count] = -1;
-                candidate_count++;
-            }
-        }
+        int32_t remote_users[4] = {-1, -1, -1, -1};
+        int64_t login_call = -1;
+        int login_ok = remote_user_list(
+            target, trap_mem, fn_login_user_list, probe_device_addr,
+            remote_users, &login_call);
+        klog_printf(
+            "[PoorDS4] remote user login call=0x%llx ok=%d "
+            "ids=0x%08x,0x%08x,0x%08x,0x%08x\n",
+            (unsigned long long)(uint64_t)login_call, login_ok,
+            (uint32_t)remote_users[0], (uint32_t)remote_users[1],
+            (uint32_t)remote_users[2], (uint32_t)remote_users[3]);
+        if (login_ok == 0)
+            candidate_count = merge_user_ids(
+                remote_users, 4u, candidate_ids, candidate_numbers,
+                candidate_count, POORDS4_MAX_USER_CANDIDATES);
+        remote_users[0] = -1;
+        remote_users[1] = -1;
+        remote_users[2] = -1;
+        remote_users[3] = -1;
+        int64_t registered_call = -1;
+        int registered_ok = remote_user_list(
+            target, trap_mem, fn_registered_user_list, probe_device_addr,
+            remote_users, &registered_call);
+        klog_printf(
+            "[PoorDS4] remote user registered call=0x%llx ok=%d "
+            "ids=0x%08x,0x%08x,0x%08x,0x%08x\n",
+            (unsigned long long)(uint64_t)registered_call, registered_ok,
+            (uint32_t)remote_users[0], (uint32_t)remote_users[1],
+            (uint32_t)remote_users[2], (uint32_t)remote_users[3]);
+        if (registered_ok == 0)
+            candidate_count = merge_user_ids(
+                remote_users, 4u, candidate_ids, candidate_numbers,
+                candidate_count, POORDS4_MAX_USER_CANDIDATES);
+        klog_printf("[PoorDS4] reader user candidates n=%u\n",
+                    candidate_count);
     }
     int32_t pad_ordinal = 0;
     for (uint32_t user_slot = 0; user_slot < candidate_count; ++user_slot) {
@@ -3015,6 +3050,135 @@ wireless_ds4_remote_reader_start(
                     klog_printf("%02x", device_info[byte]);
             }
             klog_printf("\n");
+            /* libScePad already reports its own view of this pad through the
+             * is_ds4 field above (handle based). Ask again with the user id:
+             * a positive result for a user whose pad opens but reports no
+             * device proves that libScePad knows a DS4 we cannot read. */
+            if (pad_index == 0 && fn_isds4) {
+                int64_t isds4_by_user = pt_call(
+                    target, fn_isds4, trap_mem,
+                    (uint32_t)candidate_user, 0, 0, 0, 0, 0);
+                klog_printf(
+                    "[PoorDS4] pad is-ds4-connected by_user=0x%08x "
+                    "result=0x%llx\n",
+                    (uint32_t)candidate_user,
+                    (unsigned long long)(uint64_t)isds4_by_user);
+            }
+            /* libScePad's own controller information for this handle: it
+             * carries the connection/class fields the reader would otherwise
+             * have to infer from a read sample. Only the raw bytes are logged
+             * so no layout assumption is made for a pad that is not the
+             * selected source. */
+            if (pad_index == 0 && candidate_handle >= 0 && fn_controller_info &&
+                probe_device_addr > 0) {
+                uint8_t controller_probe[32];
+                memset(controller_probe, 0xa5, sizeof(controller_probe));
+                int32_t controller_call = -1;
+                int controller_copy = -1;
+                if (pt_io_write(target, probe_device_addr, controller_probe,
+                                sizeof(controller_probe)) == 0) {
+                    controller_call = (int32_t)pt_call(
+                        target, fn_controller_info, trap_mem,
+                        (uint32_t)candidate_handle,
+                        (uint64_t)probe_device_addr, 0, 0, 0, 0);
+                    if (controller_call == 0)
+                        controller_copy = mdbg_copyout(
+                            target, probe_device_addr, controller_probe,
+                            32u);
+                }
+                klog_printf(
+                    "[PoorDS4] pad controller-info user=0x%08x call=0x%08x "
+                    "copy=%d data=",
+                    (uint32_t)candidate_user, (uint32_t)controller_call,
+                    controller_copy);
+                for (unsigned probe_index = 0; probe_index < 32u;
+                     ++probe_index)
+                    klog_printf("%02x", controller_probe[probe_index]);
+                klog_printf("\n");
+            }
+            /* A pad that opens but reports no device may still exist behind a
+             * different pad type or index, so both are probed before giving up
+             * on this user. Index 0 must be released first: libScePad answers
+             * ALREADY_OPEN (0x809b0003) for every further index while one
+             * handle of that user is still open, which is why the plain
+             * 0..7 scan can never get past index 0. */
+            if (pad_index == 0 && !read_connected && !event_connected) {
+                int32_t kept_handle = candidate_handle;
+                int kept_opened = opened_here;
+                if (opened_here && kept_handle >= 0)
+                    (void)pt_call(
+                        target, fn_closepad, trap_mem,
+                        (uint32_t)kept_handle, 0, 0, 0, 0, 0);
+                for (int32_t alt_index = 1; alt_index < 8; ++alt_index) {
+                    int32_t index_handle = (int32_t)pt_call(
+                        target, fn_open, trap_mem,
+                        (uint32_t)candidate_user, 0, (uint32_t)alt_index,
+                        0, 0, 0);
+                    int32_t index_call = -1;
+                    int32_t index_device = -1;
+                    int index_copy = -1;
+                    if (index_handle >= 0 && fn_getdeviceid &&
+                        pt_io_write(target, probe_device_addr, &index_device,
+                                    sizeof(index_device)) == 0) {
+                        index_call = (int32_t)pt_call(
+                            target, fn_getdeviceid, trap_mem,
+                            (uint32_t)index_handle,
+                            (uint64_t)probe_device_addr, 0, 0, 0, 0);
+                        if (index_call == 0)
+                            index_copy = mdbg_copyout(
+                                target, probe_device_addr, &index_device,
+                                sizeof(index_device));
+                    }
+                    if (index_handle >= 0)
+                        (void)pt_call(
+                            target, fn_closepad, trap_mem,
+                            (uint32_t)index_handle, 0, 0, 0, 0, 0);
+                    klog_printf(
+                        "[PoorDS4] pad alt-index user=0x%08x index=%d "
+                        "handle=0x%08x device_call=0x%08x device=0x%08x "
+                        "copy=%d\n",
+                        (uint32_t)candidate_user, alt_index,
+                        (uint32_t)index_handle, (uint32_t)index_call,
+                        (uint32_t)index_device, index_copy);
+                }
+                for (int32_t alt_type = 1; alt_type <= 3; ++alt_type) {
+                    int32_t alt_handle = (int32_t)pt_call(
+                        target, fn_open, trap_mem,
+                        (uint32_t)candidate_user, (uint32_t)alt_type, 0,
+                        0, 0, 0);
+                    int32_t alt_call = -1;
+                    int32_t alt_device = -1;
+                    int alt_copy = -1;
+                    if (alt_handle >= 0 && fn_getdeviceid &&
+                        pt_io_write(target, probe_device_addr, &alt_device,
+                                    sizeof(alt_device)) == 0) {
+                        alt_call = (int32_t)pt_call(
+                            target, fn_getdeviceid, trap_mem,
+                            (uint32_t)alt_handle,
+                            (uint64_t)probe_device_addr, 0, 0, 0, 0);
+                        if (alt_call == 0)
+                            alt_copy = mdbg_copyout(
+                                target, probe_device_addr, &alt_device,
+                                sizeof(alt_device));
+                    }
+                    if (alt_handle >= 0)
+                        (void)pt_call(
+                            target, fn_closepad, trap_mem,
+                            (uint32_t)alt_handle, 0, 0, 0, 0, 0);
+                    klog_printf(
+                        "[PoorDS4] pad alt-type user=0x%08x type=%d "
+                        "handle=0x%08x device_call=0x%08x device=0x%08x "
+                        "copy=%d\n",
+                        (uint32_t)candidate_user, alt_type,
+                        (uint32_t)alt_handle, (uint32_t)alt_call,
+                        (uint32_t)alt_device, alt_copy);
+                }
+                /* Restore the state of the original probe: the empty pad still
+                 * consumes its pad ordinal, which is what keeps the reader
+                 * slot aligned with the game's own pad index. */
+                candidate_handle = kept_handle;
+                opened_here = kept_opened;
+            }
             /* Modifica 11: a native DualSense (054c:0ce6 / 054c:0df2) must
              * never enter the reader. Every identity path below goes through
              * remote_pad_is_known_ds4(), which rejects it; log it explicitly
@@ -3084,6 +3248,29 @@ wireless_ds4_remote_reader_start(
                     (uint32_t)candidate_handle, 0, 0, 0, 0, 0);
             }
         }
+    }
+    /* Ask libScePad for its own pad info. If the firmware reports more pads
+     * than we could open per user, the missing DS4 is a process side
+     * visibility problem rather than a controller that is not connected. */
+    if (fn_getinfo && probe_device_addr > 0) {
+        uint8_t pad_info[256];
+        memset(pad_info, 0, sizeof(pad_info));
+        int64_t info_result = -1;
+        int info_copy = -1;
+        if (pt_io_write(target, probe_device_addr, pad_info,
+                        sizeof(pad_info)) == 0) {
+            info_result = pt_call(
+                target, fn_getinfo, trap_mem, (uint64_t)probe_device_addr,
+                (uint64_t)probe_device_addr, 0, 0, 0, 0);
+            if (info_result == 0)
+                info_copy = mdbg_copyout(
+                    target, probe_device_addr, pad_info, sizeof(pad_info));
+        }
+        klog_printf("[PoorDS4] pad get-info result=0x%llx copy=%d data=",
+                    (unsigned long long)(uint64_t)info_result, info_copy);
+        for (unsigned info_index = 0; info_index < 32u; ++info_index)
+            klog_printf("%02x", pad_info[info_index]);
+        klog_printf("\n");
     }
     /* Prefer the DS4 of the currently active (foreground) user, so the player
      * who is actually interacting owns the bridged primary source. */
@@ -6437,55 +6624,62 @@ remote_pad_identity_1160(pid_t pid, intptr_t libpad_base,
         pid, libpad_base, pad_handle, out_connected, out_vendor, out_product);
 }
 
-/* Enumerates the distinct user ids present in libScePad's client table of the
- * process we are attached to. libScePad populates that table for every
- * assigned pad, so this yields the real list of users that own a controller,
- * independently of sceUserServiceGetLoginUserIdList, which is incomplete in
- * the payload process. */
-static unsigned
-remote_pad_table_users(pid_t pid, intptr_t libpad_base,
-                       int32_t *out_users, unsigned max_users)
+/* Reads one user-service list from the attached process. Both libSceUserService
+ * list entry points share the same shape: a caller owned array of user ids in
+ * the first argument. A generous zeroed scratch area is used so that a list
+ * variant which also reports a count cannot write past the buffer, and any
+ * extra argument stays 0. */
+static int
+remote_user_list(pid_t target, intptr_t trap_mem, intptr_t fn_list,
+                 intptr_t scratch, int32_t out_users[4], int64_t *out_call)
 {
 #if !defined(__PROSPERO__)
-    (void)pid; (void)libpad_base; (void)out_users; (void)max_users;
-    return 0;
+    (void)target; (void)trap_mem; (void)fn_list; (void)scratch;
+    (void)out_users; (void)out_call;
+    return -1;
 #else
-    if (libpad_base <= 0 || !out_users || max_users == 0)
-        return 0;
-    unsigned count = 0;
-    const uint32_t strides[] = {
-        POORDS4_PAD_CLIENT_STRIDE_1160,
-        POORDS4_PAD_CLIENT_STRIDE_0602
-    };
-    for (unsigned s = 0; s < 2u; ++s) {
-        uint32_t stride = strides[s];
-        for (unsigned slot = 0; slot < 16u; ++slot) {
-            intptr_t entry = libpad_base + POORDS4_PAD_CLIENT_TABLE_1160 +
-                (intptr_t)slot * stride;
-            uint32_t handle = 0;
-            int32_t user_id = -1;
-            if (remote_reader_copyout(
-                    pid, entry + POORDS4_PAD_CLIENT_HANDLE_1160,
-                    &handle, sizeof(handle)) != 0)
-                break;
-            if (handle == 0)
-                continue;
-            if (remote_reader_copyout(
-                    pid, entry + POORDS4_PAD_CLIENT_USER_ID_1160,
-                    &user_id, sizeof(user_id)) != 0)
-                break;
-            if (user_id < 0)
-                continue;
-            unsigned existing = 0;
-            for (unsigned index = 0; index < count; ++index)
-                if (out_users[index] == user_id)
-                    existing = 1;
-            if (!existing && count < max_users)
-                out_users[count++] = user_id;
+    if (!fn_list || scratch <= 0 || !out_users || !out_call)
+        return -1;
+    *out_call = -1;
+    int32_t buffer[32];
+    memset(buffer, 0, sizeof(buffer));
+    if (pt_io_write(target, scratch, buffer, sizeof(buffer)) != 0)
+        return -1;
+    int64_t call_result = pt_call(
+        target, fn_list, trap_mem, (uint64_t)scratch, 0, 0, 0, 0, 0);
+    *out_call = call_result;
+    if (call_result != 0)
+        return -1;
+    if (mdbg_copyout(target, scratch, buffer, sizeof(buffer)) != 0)
+        return -1;
+    for (unsigned index = 0; index < 4u; ++index)
+        out_users[index] = buffer[index];
+    return 0;
+#endif
+}
+
+/* Appends the not yet known user ids of one list, preserving the order of the
+ * already collected candidates so their pad ordinals do not move. */
+static uint32_t
+merge_user_ids(const int32_t *source, uint32_t source_count,
+               int32_t *candidate_ids, int32_t *candidate_numbers,
+               uint32_t candidate_count, uint32_t max_candidates)
+{
+    for (uint32_t index = 0; index < source_count; ++index) {
+        int32_t user_id = source[index];
+        if (user_id < 0)
+            continue;
+        int already_listed = 0;
+        for (uint32_t scan = 0; scan < candidate_count; ++scan)
+            if (candidate_ids[scan] == user_id)
+                already_listed = 1;
+        if (!already_listed && candidate_count < max_candidates) {
+            candidate_ids[candidate_count] = user_id;
+            candidate_numbers[candidate_count] = -1;
+            candidate_count++;
         }
     }
-    return count;
-#endif
+    return candidate_count;
 }
 
 static int
