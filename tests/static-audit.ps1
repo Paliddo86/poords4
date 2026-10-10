@@ -89,6 +89,12 @@ Assert-True ($iconHeader.Contains('#define POORDS4_ICON_PNG_SIZE ') `
     'Embedded toast icon is not a generated PNG.'
 Assert-True ($makefile.Contains('assets/poor_ds4_icon.h')) `
     'Bridge build does not depend on the embedded icon header.'
+Assert-True ($main.Contains('"%d controller active"')) `
+    'Controller count toast does not use the short "N controller active" body.'
+Assert-True ($main.Contains('subMessage\":{\"body\":\"%s')) `
+    'Toast sub message is not dynamic.'
+Assert-True ($main.Contains('game_bridge_notify_text(')) `
+    'Toast builder does not expose an explicit sub message.'
 $python = Get-Command python3 -ErrorAction SilentlyContinue
 if ($python) {
     & $python.Source (Join-Path $repo 'tests/validate_notify_json.py') |
@@ -235,13 +241,17 @@ $expectedTracked = @(
     'docs/ARCHITECTURE.md',
     'docs/FIRMWARE_SUPPORT.md',
     'payload/Makefile',
+    'payload/assets/poor_ds4_icon.h',
+    'payload/assets/poor_ds4_icon.png',
     'payload/game_pad_bridge_main.c',
     'payload/game_pad_bridge_status_main.c',
     'payload/pad_types.h',
     'payload/stop_game_pad_bridge_main.c',
     'payload/wireless_ds4.c',
     'payload/wireless_ds4.h',
-    'tests/static-audit.ps1'
+    'tests/static-audit.ps1',
+    'tests/validate_notify_json.py',
+    'tools/make_icon.py'
 )
 Assert-True ($tracked.Count -eq $expectedTracked.Count) `
     'Tracked file count does not match the focused public tree.'

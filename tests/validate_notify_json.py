@@ -63,19 +63,19 @@ def macro_text(text, name):
     return match.group(1).replace("\\\n", "\n")
 
 
-def build_payload(text, icon, body):
+def build_payload(text, icon, body, sub_message):
     # Mirrors the snprintf() in game_bridge_notify_native_with_icon(): the
-    # macros are separated by the four %s placeholders (icon, body, icon,
-    # body) and the template itself ends with the %u serial.
+    # macros are separated by placeholders and SUB carries one of its own for
+    # the small line, so the argument order is icon, body, sub, icon, body.
     template = ""
     for name in MACROS:
         if template:
             template += "%s"
         template += expand(text, macro_text(text, name))
-    values = [icon, body, icon, body]
+    values = [icon, body, sub_message, icon, body]
     parts = template.split("%s")
     if len(parts) != len(values) + 1:
-        fail(f"template has {len(parts) - 1} %s placeholders, expected 4")
+        fail(f"template has {len(parts) - 1} %s placeholders, expected 5")
     out = ""
     for index, part in enumerate(parts):
         out += part
@@ -88,8 +88,14 @@ def check(text):
     icon = expand(text, macro_text(text, "POORDS4_NOTIFY_ICON_URL"))
     if not icon.startswith('{"type":"Url"'):
         fail(f"unexpected icon spec {icon!r}")
-    for body in ("3 controller active", "PoorDS4: reset requested"):
-        payload = build_payload(text, icon, body)
+    cases = [
+        ("3 controller active", "wireless DS4 ready; waiting for a PS5 game"),
+        ("3 controller active", "wireless DS4 active in the PS5 game"),
+        ("3 controller active", "wireless DS4 now bridged"),
+        ("PoorDS4: reset requested via controller shortcut", "PoorDS4"),
+    ]
+    for body, sub in cases:
+        payload = build_payload(text, icon, body, sub)
         try:
             parsed = json.loads(payload)
         except json.JSONDecodeError as error:
@@ -102,8 +108,8 @@ def check(text):
              "rawData.viewData.icon is not the Url icon"),
             (view.get("message", {}).get("body") == body,
              "rawData.viewData.message.body does not carry the message"),
-            (view.get("subMessage", {}).get("body") == "PoorDS4",
-             "rawData.viewData.subMessage.body is not PoorDS4"),
+            (view.get("subMessage", {}).get("body") == sub,
+             "rawData.viewData.subMessage.body does not carry the event"),
             (preview.get("icon", {}).get("type") == "Url",
              "platformViews.previewDisabled.viewData.icon is not the Url icon"),
             (preview.get("message", {}).get("body") == body,
@@ -116,7 +122,7 @@ def check(text):
         for ok, message in checks:
             if not ok:
                 fail(message)
-        print(f"ok: {len(payload)} bytes, body={body!r}")
+        print(f"ok: {len(payload)} bytes, body={body!r}, sub={sub!r}")
 
 
 def main():

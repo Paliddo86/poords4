@@ -641,6 +641,25 @@ game_bridge_notify_kernel(const char *message)
         (uint32_t)result, message ? message : "");
 }
 
+/* The notification text builder is shared by every toast: the body carries the
+ * main line, the sub message the small line under it, and both are escaped
+ * before they enter the JSON. */
+static void
+game_bridge_escape_json(const char *source, char *out, size_t cap)
+{
+    size_t index = 0;
+    if (!source)
+        source = "";
+    for (; source[index] != 0 && index + 1u < cap; ++index) {
+        char letter = source[index];
+        if (letter == '"' || letter == '\\' ||
+            (unsigned char)letter < 0x20u)
+            letter = '\'';
+        out[index] = letter;
+    }
+    out[index] = 0;
+}
+
 /* Native system notification: the interactive toast template the console uses
  * for its own messages (icon, title, body) instead of the plain kernel
  * notification above. Keeps every character that would break the JSON payload
@@ -664,7 +683,7 @@ game_bridge_notify_kernel(const char *message)
     ",\"message\":{\"body\":\""
 
 #define POORDS4_NOTIFY_TEMPLATE_SUB \
-    "\"},\"subMessage\":{\"body\":\"PoorDS4\"}}," \
+    "\"},\"subMessage\":{\"body\":\"%s\"}}," \
     "\"platformViews\":{\"previewDisabled\":{\"viewData\":{\"icon\":"
 
 #define POORDS4_NOTIFY_TEMPLATE_BODY \
@@ -690,31 +709,28 @@ game_bridge_notify_icon(void)
 }
 
 static int
-game_bridge_notify_native_with_icon(const char *message, const char *icon)
+game_bridge_notify_native_with_icon(const char *message,
+                                    const char *sub_message,
+                                    const char *icon)
 {
     static unsigned notify_serial;
     char body[192];
+    char sub[128];
     char payload[1024];
     if (!message || !icon)
         return 0;
-    size_t index = 0;
-    for (; message[index] != 0 && index + 1u < sizeof(body); ++index) {
-        char letter = message[index];
-        if (letter == '"' || letter == '\\' ||
-            (unsigned char)letter < 0x20u)
-            letter = '\'';
-        body[index] = letter;
-    }
-    body[index] = 0;
+    game_bridge_escape_json(message, body, sizeof(body));
+    game_bridge_escape_json(sub_message, sub, sizeof(sub));
     notify_serial++;
     int length = snprintf(
         payload, sizeof(payload),
-        POORDS4_NOTIFY_TEMPLATE_HEAD "%s"
-        POORDS4_NOTIFY_TEMPLATE_MID "%s"
-        POORDS4_NOTIFY_TEMPLATE_SUB "%s"
-        POORDS4_NOTIFY_TEMPLATE_BODY "%s"
+        POORDS4_NOTIFY_TEMPLATE_HEAD "%s"      /* viewData icon */
+        POORDS4_NOTIFY_TEMPLATE_MID "%s"       /* main body */
+        POORDS4_NOTIFY_TEMPLATE_SUB            /* small line under it */
+        "%s"                                   /* preview icon */
+        POORDS4_NOTIFY_TEMPLATE_BODY "%s"      /* preview body */
         POORDS4_NOTIFY_TEMPLATE_END,
-        icon, body, icon, body, 900000u + notify_serial);
+        icon, body, sub, icon, body, 900000u + notify_serial);
     if (length <= 0 || (size_t)length >= sizeof(payload))
         return 0;
     int result = sceNotificationSend(0xfe /* system */, 1, payload);
@@ -730,21 +746,20 @@ game_bridge_notify_native_with_icon(const char *message, const char *icon)
     return result == 0 ? 1 : 0;
 }
 
-static int
-game_bridge_notify_native(const char *message)
+/* Sends a toast whose small line under the main one is explicit. */
+static void
+game_bridge_notify_text(const char *message, const char *sub_message)
 {
-    return game_bridge_notify_native_with_icon(
-        message, game_bridge_notify_icon());
+    if (game_bridge_notify_native_with_icon(
+            message, sub_message, game_bridge_notify_icon()))
+        return;
+    game_bridge_notify_kernel(message);
 }
 
-/* Sends the message as a native system toast when possible, falling back to the
- * kernel notification otherwise. */
 static void
 game_bridge_notify(const char *message)
 {
-    if (game_bridge_notify_native(message))
-        return;
-    game_bridge_notify_kernel(message);
+    game_bridge_notify_text(message, "PoorDS4");
 }
 
 /* One-shot icon diagnostic: sends one toast per icon variant so the rendering
@@ -769,7 +784,8 @@ game_bridge_icon_probe(void)
         snprintf(message, sizeof(message),
                  "PoorDS4 icon test %u/%u: %s", index + 1u, total,
                  labels[index]);
-        if (!game_bridge_notify_native_with_icon(message, icons[index])) {
+        if (!game_bridge_notify_native_with_icon(
+                message, "PoorDS4 icon test", icons[index])) {
             poords4_log(
                 "[PoorDS4] icon probe %u/%u rejected\n",
                 index + 1u, total);
@@ -786,19 +802,22 @@ game_bridge_icon_probe_poll(void)
     game_bridge_icon_probe();
 }
 
-/* Reports how many wireless DS4 the reader detected and associated with a
- * slot. A single user name was misleading once more than one DS4 is bridged,
- * because every toast showed only the user of the last detected DS4. */
+/* Reports how many wireless controllers the reader associated with a slot. The
+ * body stays minimal ("3 controller active") and the event that triggered the
+ * toast becomes the small line under it. A single user name was misleading
+ * once more than one DS4 is bridged, because every toast showed only the user
+ * of the last detected DS4. */
 static void
 notify_with_ds4_count(const char *prefix, const char *suffix,
                       int32_t ds4_count)
 {
-    char message[256];
+    char body[64];
+    char sub[160];
     int count = ds4_count > 0 ? (int)ds4_count : 0;
-    snprintf(message, sizeof(message),
-             "PoorDS4: %s (%d DS4 detected and associated)%s",
-             prefix ? prefix : "", count, suffix ? suffix : "");
-    game_bridge_notify(message);
+    snprintf(body, sizeof(body), "%d controller active", count);
+    snprintf(sub, sizeof(sub), "%s%s", prefix ? prefix : "",
+             suffix ? suffix : "");
+    game_bridge_notify_text(body, sub);
 }
 
 /* Native kernel log (klog) sink of this process, resolved once at startup.
@@ -823,7 +842,7 @@ native_log_ds4_count(const char *what, int32_t ds4_count)
     char message[128];
     int count = ds4_count > 0 ? (int)ds4_count : 0;
     snprintf(message, sizeof(message),
-             "[PoorDS4] %s: %d DS4 detected and associated\n",
+             "[PoorDS4] %s: %d controller active\n",
              what ? what : "-", count);
     native_log_line(message);
 }
