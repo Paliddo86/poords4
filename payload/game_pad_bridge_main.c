@@ -1165,25 +1165,6 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
     {
         uint32_t newly_fed = current_fed_mask & ~s_prev_fed_mask;
         uint32_t newly_unfed = s_prev_fed_mask & ~current_fed_mask;
-        static uint32_t last_rescan_count;
-        static uint32_t last_rescan_found;
-        if (reader_pid > 0 && reader_args > 0) {
-            uint32_t rescan_count = 0;
-            uint32_t rescan_found = 0;
-            int32_t rescan_user = -1;
-            if (wireless_ds4_remote_reader_rescan_state(
-                    reader_pid, reader_args, &rescan_count,
-                    &rescan_found, &rescan_user) == 0 &&
-                (rescan_count != last_rescan_count ||
-                 rescan_found != last_rescan_found)) {
-                poords4_log(
-                    "[PoorDS4] automatic discovery scan count=%u "
-                    "found=%u last_user=0x%08x\n",
-                    rescan_count, rescan_found, (uint32_t)rescan_user);
-                last_rescan_count = rescan_count;
-                last_rescan_found = rescan_found;
-            }
-        }
         if (s_prev_fed_mask != 0u &&
             ((newly_fed | newly_unfed) & ~1u) != 0u) {
             unsigned fed = 0;

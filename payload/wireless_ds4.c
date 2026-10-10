@@ -3823,34 +3823,6 @@ wireless_ds4_remote_reader_read_slot(pid_t pid, intptr_t args_kaddr,
 #endif
 }
 
-/* Automatic discovery counters, read from the injected reader arguments. */
-int
-wireless_ds4_remote_reader_rescan_state(
-    pid_t pid, intptr_t args_kaddr, uint32_t *out_count,
-    uint32_t *out_found, int32_t *out_last_user)
-{
-#if !defined(__PROSPERO__)
-    (void)pid; (void)args_kaddr; (void)out_count; (void)out_found;
-    (void)out_last_user;
-    return -1;
-#else
-    if (pid <= 0 || !args_kaddr)
-        return -1;
-    RemotePadReaderArgs snapshot;
-    memset(&snapshot, 0, sizeof(snapshot));
-    if (remote_reader_copyout(
-            pid, args_kaddr, &snapshot, sizeof(snapshot)) != 0)
-        return -1;
-    if (out_count)
-        *out_count = snapshot.rescan_count;
-    if (out_found)
-        *out_found = snapshot.rescan_found;
-    if (out_last_user)
-        *out_last_user = snapshot.rescan_last_user;
-    return 0;
-#endif
-}
-
 int
 wireless_ds4_remote_reader_status(
     pid_t pid, intptr_t args_kaddr,

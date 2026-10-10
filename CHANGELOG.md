@@ -3,6 +3,24 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc77] - 2026-09-30
+
+### Changed
+
+- **Removed the per-frame counter read from the supervisor**: the rc76
+  diagnostic copied the whole 1920-byte reader argument block on every fed
+  frame (~2 KB at 60-125 Hz, plus the kernel auth-id switch that
+  `remote_reader_copyout()` performs) only to log rescan counters that no
+  decision depends on. Nothing in the supervisor needs those values: the rescan
+  runs and decides entirely inside RemotePlay.
+  - The functional evidence stays in the log as
+    `automatic discovery: fed mask=0x... now slot mask=0x...` plus the native
+    toast whenever a controller joins or leaves.
+  - `wireless_ds4_remote_reader_rescan_state()` was removed again (header and
+    implementation); the counters remain in the target arguments, written by
+    the reader thread, so an on-demand status report can surface them later
+    without any per-frame cost.
+
 ## [0.1.0-rc76] - 2026-09-30
 
 ### Fixed

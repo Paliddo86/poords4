@@ -74,13 +74,6 @@ int wireless_ds4_remote_reader_status(
     pid_t pid, intptr_t args_address,
     PoorDS4RemoteReaderStatus *out_status);
 
-/* Automatic discovery counters maintained by the injected reader thread, for
- * logging: how many rescans ran, how many pads they added and the last user
- * that was picked up. */
-int wireless_ds4_remote_reader_rescan_state(
-    pid_t pid, intptr_t args_address, uint32_t *out_count,
-    uint32_t *out_found, int32_t *out_last_user);
-
 #define POORDS4_MAX_SLOTS 4u
 
 int wireless_ds4_game_bridge_install(
