@@ -1165,6 +1165,25 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
     {
         uint32_t newly_fed = current_fed_mask & ~s_prev_fed_mask;
         uint32_t newly_unfed = s_prev_fed_mask & ~current_fed_mask;
+        static uint32_t last_rescan_count;
+        static uint32_t last_rescan_found;
+        if (reader_pid > 0 && reader_args > 0) {
+            uint32_t rescan_count = 0;
+            uint32_t rescan_found = 0;
+            int32_t rescan_user = -1;
+            if (wireless_ds4_remote_reader_rescan_state(
+                    reader_pid, reader_args, &rescan_count,
+                    &rescan_found, &rescan_user) == 0 &&
+                (rescan_count != last_rescan_count ||
+                 rescan_found != last_rescan_found)) {
+                poords4_log(
+                    "[PoorDS4] automatic discovery scan count=%u "
+                    "found=%u last_user=0x%08x\n",
+                    rescan_count, rescan_found, (uint32_t)rescan_user);
+                last_rescan_count = rescan_count;
+                last_rescan_found = rescan_found;
+            }
+        }
         if (s_prev_fed_mask != 0u &&
             ((newly_fed | newly_unfed) & ~1u) != 0u) {
             unsigned fed = 0;
@@ -2024,6 +2043,7 @@ main(void)
     pid_t launch_candidate_pid = -1;
     uint64_t launch_candidate_since_ms = 0;
     uint64_t last_waiting_source_log_ms = 0;
+    pid_t discovery_refresh_pid = -1;
     for (;;) {
         if (lifecycle_should_stop())
             break;
@@ -2179,6 +2199,19 @@ main(void)
                 "launch grace=%llu ms\n",
                 observed_game_pid,
                 (unsigned long long)GAME_BRIDGE_LAUNCH_GRACE_MS);
+            /* A game start is the moment the user set is final, so refresh the
+             * reader once per game: the discovery then runs with the complete
+             * login and registered user lists, which is what makes controllers
+             * assigned after PoorDS4 started appear without the reset
+             * shortcut. The launch grace below gives the restart its window
+             * before the bridge is installed. */
+            if (discovery_refresh_pid != observed_game_pid) {
+                discovery_refresh_pid = observed_game_pid;
+                reader_restart_required = 1;
+                poords4_log(
+                    "[PoorDS4] game start pid=%d: refreshing reader "
+                    "discovery before install\n", observed_game_pid);
+            }
         }
         if (now_ms != 0 && launch_candidate_since_ms != 0 &&
             now_ms < launch_candidate_since_ms +

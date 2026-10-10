@@ -851,12 +851,14 @@ remote_pad_reader_rescan(RemotePadReaderArgs *a)
     typedef int32_t (*getid_fn_t)(int32_t, void *);
     typedef int32_t (*readstate_fn_t)(int32_t, void *);
     typedef int32_t (*close_pad_fn_t)(int32_t);
+    typedef int32_t (*setlogin_fn_t)(int32_t);
     gethandle_fn_t get_handle = (gethandle_fn_t)(uintptr_t)a->fp_gethandle;
     open_fn_t open_pad = (open_fn_t)(uintptr_t)a->fp_open;
     getid_fn_t get_device_id = (getid_fn_t)(uintptr_t)a->fp_getdeviceid;
     getid_fn_t get_device_info = (getid_fn_t)(uintptr_t)a->fp_getdeviceinfo;
     readstate_fn_t read_state = (readstate_fn_t)(uintptr_t)a->fp_readstate;
     close_pad_fn_t close_pad = (close_pad_fn_t)(uintptr_t)a->fp_closepad;
+    setlogin_fn_t setlogin_user = (setlogin_fn_t)(uintptr_t)a->fp_setlogin;
     if (!open_pad || !get_device_id || !get_device_info || !read_state)
         return;
 
@@ -872,6 +874,11 @@ remote_pad_reader_rescan(RemotePadReaderArgs *a)
         }
         if (has_slot)
             continue;
+        /* The RemotePlay libScePad client only exposes the user context it is
+         * bound to, so the same bind the host discovery performs is required
+         * here as well; without it the pad opens but reports no device. */
+        if (setlogin_user && a->candidate_numbers[candidate] > 0)
+            (void)setlogin_user(a->candidate_numbers[candidate]);
         int32_t handle = -1;
         if (get_handle)
             handle = get_handle(user, 0, 0);
@@ -3813,6 +3820,34 @@ wireless_ds4_remote_reader_read_slot(pid_t pid, intptr_t args_kaddr,
         }
     }
     return -1;
+#endif
+}
+
+/* Automatic discovery counters, read from the injected reader arguments. */
+int
+wireless_ds4_remote_reader_rescan_state(
+    pid_t pid, intptr_t args_kaddr, uint32_t *out_count,
+    uint32_t *out_found, int32_t *out_last_user)
+{
+#if !defined(__PROSPERO__)
+    (void)pid; (void)args_kaddr; (void)out_count; (void)out_found;
+    (void)out_last_user;
+    return -1;
+#else
+    if (pid <= 0 || !args_kaddr)
+        return -1;
+    RemotePadReaderArgs snapshot;
+    memset(&snapshot, 0, sizeof(snapshot));
+    if (remote_reader_copyout(
+            pid, args_kaddr, &snapshot, sizeof(snapshot)) != 0)
+        return -1;
+    if (out_count)
+        *out_count = snapshot.rescan_count;
+    if (out_found)
+        *out_found = snapshot.rescan_found;
+    if (out_last_user)
+        *out_last_user = snapshot.rescan_last_user;
+    return 0;
 #endif
 }
 

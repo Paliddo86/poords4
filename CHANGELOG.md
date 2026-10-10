@@ -3,6 +3,33 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc76] - 2026-09-30
+
+### Fixed
+
+- **The automatic rescan never bound the login user number**, which is why the
+  rc74/75 field tests still needed the reset shortcut: the host discovery calls
+  `scePadSetLoginUserNumber()` before probing each user, the reader-thread
+  rescan did not, so the pads it opened reported no device. It now performs the
+  same bind (the number is already stored per candidate), so a controller
+  connected or assigned to a known user is picked up within ~3 s.
+- **The user set is refreshed when a game starts**: at the moment a new game pid
+  passes the module check (before the install, during the launch grace) the
+  supervisor sets `reader_restart_required` once per game, so the discovery runs
+  with the complete login **and** registered user lists. Controllers assigned
+  after PoorDS4 started are then part of the first session discovery, without
+  pressing L1+R1+L2+R2.
+- **Rescan diagnostics**: `automatic discovery scan count=N found=N
+  last_user=0x...` is logged whenever the counters change, so the next test log
+  shows whether the rescan runs and what it finds. `found` also reports the
+  number of pads that the rescan placed.
+
+### Note
+
+- This firmware exposes no "controller associated with a user" event (and no
+  `scePadGetUsersWithPads`): the equivalent is polling (rescan every ~3 s) plus
+  the user-list refresh at game start described above.
+
 ## [0.1.0-rc75] - 2026-09-30
 
 ### Changed
