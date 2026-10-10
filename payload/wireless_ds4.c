@@ -13,6 +13,7 @@
 #include <stdarg.h>
 #include <limits.h>
 #include <fcntl.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <machine/reg.h>
 #include <sys/ptrace.h>
@@ -45,6 +46,73 @@
 
 extern void poords4_log(const char *format, ...);
 #define klog_printf poords4_log
+
+/* Runtime log verbosity. Release builds keep only errors and the essential
+ * lifecycle information; the detailed diagnostics (one line per remote call,
+ * per candidate pad probe, periodic health) are written only when the user
+ * creates POORDS4_VERBOSE_FILE, or automatically after a failure so that the
+ * log already carries the context needed to diagnose it. */
+#define POORDS4_VERBOSE_FILE    POORDS4_DATA_DIR "/verbose"
+#define POORDS4_VERBOSE_POLL_MS UINT64_C(5000)
+
+static int g_log_verbose;
+static uint64_t g_log_verbose_next_poll_ms;
+
+int
+wireless_ds4_log_verbose_enabled(void)
+{
+    return g_log_verbose;
+}
+
+void
+wireless_ds4_log_set_verbose(int enabled)
+{
+    g_log_verbose = enabled ? 1 : 0;
+}
+
+/* Turns the detailed log on for the rest of the run. Called when something
+ * failed, so the log already contains the context needed to analyse it. */
+void
+wireless_ds4_log_enable_verbose(const char *reason)
+{
+    if (g_log_verbose)
+        return;
+    g_log_verbose = 1;
+    poords4_log("[PoorDS4] verbose logging enabled reason=%s\n",
+                reason ? reason : "-");
+}
+
+/* Picks up POORDS4_VERBOSE_FILE at most once every POORDS4_VERBOSE_POLL_MS. */
+void
+wireless_ds4_log_verbose_poll(void)
+{
+    if (g_log_verbose)
+        return;
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return;
+    uint64_t now_ms = (uint64_t)now.tv_sec * 1000u +
+                      (uint64_t)(now.tv_nsec / 1000000);
+    if (now_ms < g_log_verbose_next_poll_ms)
+        return;
+    g_log_verbose_next_poll_ms = now_ms + POORDS4_VERBOSE_POLL_MS;
+    int fd = open(POORDS4_VERBOSE_FILE, O_RDONLY);
+    if (fd < 0)
+        return;
+    close(fd);
+    g_log_verbose = 1;
+    poords4_log("[PoorDS4] verbose logging enabled by %s\n",
+                POORDS4_VERBOSE_FILE);
+}
+
+/* Verbose-only log line: written to the log file and to the console log only
+ * when verbose logging is enabled. */
+#define POORDS4_LOG_DEBUG(...) \
+    do { \
+        if (g_log_verbose) \
+            poords4_log(__VA_ARGS__); \
+    } while (0)
+
 #define POORDS4_REMOTE_PAD_CAPACITY 256u
 
 /* Reader iterations between two automatic pad rescans (~3 s at the 8.3 ms
@@ -432,7 +500,7 @@ get_lib(pid_t pid, const char *name, uint32_t *handle)
         snprintf(sprx, sizeof(sprx), "%s.sprx", name);
         ret = kernel_dynlib_handle(pid, sprx, handle);
     }
-    klog_printf("[WirelessDS4] dynlib_handle(%s) -> ret=%d handle=0x%x\n",
+    POORDS4_LOG_DEBUG("[WirelessDS4] dynlib_handle(%s) -> ret=%d handle=0x%x\n",
                 name, ret, *handle);
     return (*handle != 0) ? 0 : -1;
 }
@@ -560,7 +628,7 @@ pt_call(pid_t pid, intptr_t fn, intptr_t trap_rip,
         /* Suppress SIGCHLD; forwarding it during injected execution causes panics. */
         int fwd = (sig == 17) ? 0 : sig;
         if (fwd != sig)
-            klog_printf("[WirelessDS4] pt_call: suppressing SIGCHLD\n");
+            POORDS4_LOG_DEBUG("[WirelessDS4] pt_call: suppressing SIGCHLD\n");
         else
             klog_printf("[WirelessDS4] pt_call: forwarding sig=%d\n", sig);
         if (sys_ptrace(PT_CONTINUE, pid, (caddr_t)1, fwd) != 0) {
@@ -581,7 +649,7 @@ pt_call(pid_t pid, intptr_t fn, intptr_t trap_rip,
         return -1;
     }
     int64_t retval = (int64_t)regs.r_rax;
-    klog_printf("[WirelessDS4] pt_call: fn=0x%lx rip=0x%lx rax=0x%lx\n",
+    POORDS4_LOG_DEBUG("[WirelessDS4] pt_call: fn=0x%lx rip=0x%lx rax=0x%lx\n",
                 fn, (uint64_t)regs.r_rip, (uint64_t)retval);
 
     sys_ptrace(PT_SETREGS, pid, (caddr_t)&saved, 0);
@@ -2714,11 +2782,11 @@ wireless_ds4_remote_reader_start(
     }
     target = pids[0];
 
-    klog_printf(
+    POORDS4_LOG_DEBUG(
         "[PoorDS4] reader start: PT_ATTACH pid=%d users=%u "
         "process_matches=%zu\n", target, user_count, count);
     for (size_t process_index = 0; process_index < count; ++process_index)
-        klog_printf("[PoorDS4] reader process[%zu]=%d\n",
+        POORDS4_LOG_DEBUG("[PoorDS4] reader process[%zu]=%d\n",
                     process_index, pids[process_index]);
     if (sys_ptrace(PT_ATTACH, target, 0, 0) != 0) {
         klog_printf("[PoorDS4] reader start: attach failed errno=%d\n",
@@ -2824,7 +2892,7 @@ wireless_ds4_remote_reader_start(
      * pads" accessor exists on this firmware; the user ids come from the two
      * user service lists resolved above instead. */
 
-    klog_printf("[PoorDS4] reader symbols: get=0x%lx open=0x%lx "
+    POORDS4_LOG_DEBUG("[PoorDS4] reader symbols: get=0x%lx open=0x%lx "
                 "close=0x%lx isds4=0x%lx deviceid=0x%lx "
                 "deviceinfo=0x%lx "
                 "read=0x%lx sleep=0x%lx pthread=0x%lx detach=0x%lx "
@@ -2881,7 +2949,7 @@ wireless_ds4_remote_reader_start(
         }
         if (source_report_fd >= 0)
             close(source_report_fd);
-        klog_printf(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] source firmware report=%s open=%d "
             "fingerprint_mask=0x%02x\n",
             source_report_path, source_report_fd >= 0,
@@ -2930,7 +2998,7 @@ wireless_ds4_remote_reader_start(
     if (fn_setfocus)
         setfocus_result = pt_call(target, fn_setfocus, trap_mem,
                                   1, 0, 0, 0, 0, 0);
-    klog_printf(
+    POORDS4_LOG_DEBUG(
         "[PoorDS4] reader context fw=0x%08x privilege=0x%llx "
         "login_user=0x%llx focus=0x%llx\n",
         firmware,
@@ -2965,7 +3033,7 @@ wireless_ds4_remote_reader_start(
     pid_t owner_pid = getpid();
     int64_t owner_probe = pt_call(
         target, fn_kill, trap_mem, (uint32_t)owner_pid, 0, 0, 0, 0, 0);
-    klog_printf(
+    POORDS4_LOG_DEBUG(
         "[PoorDS4] reader owner liveness pid=%d probe=0x%llx\n",
         owner_pid, (unsigned long long)(uint64_t)owner_probe);
     if (owner_probe != 0)
@@ -3021,7 +3089,7 @@ wireless_ds4_remote_reader_start(
         int login_ok = remote_user_list(
             target, trap_mem, fn_login_user_list, probe_device_addr,
             remote_users, &login_call);
-        klog_printf(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] remote user login call=0x%llx ok=%d "
             "ids=0x%08x,0x%08x,0x%08x,0x%08x\n",
             (unsigned long long)(uint64_t)login_call, login_ok,
@@ -3039,7 +3107,7 @@ wireless_ds4_remote_reader_start(
         int registered_ok = remote_user_list(
             target, trap_mem, fn_registered_user_list, probe_device_addr,
             remote_users, &registered_call);
-        klog_printf(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] remote user registered call=0x%llx ok=%d "
             "ids=0x%08x,0x%08x,0x%08x,0x%08x\n",
             (unsigned long long)(uint64_t)registered_call, registered_ok,
@@ -3049,7 +3117,7 @@ wireless_ds4_remote_reader_start(
             candidate_count = merge_user_ids(
                 remote_users, 4u, candidate_ids, candidate_numbers,
                 candidate_count, POORDS4_MAX_USER_CANDIDATES, 1u);
-        klog_printf("[PoorDS4] reader user candidates n=%u\n",
+        POORDS4_LOG_DEBUG("[PoorDS4] reader user candidates n=%u\n",
                     candidate_count);
     }
     int32_t pad_ordinal = 0;
@@ -3064,7 +3132,7 @@ wireless_ds4_remote_reader_start(
             int64_t bind_result = pt_call(
                 target, fn_setloginuser, trap_mem,
                 (uint32_t)candidate_number, 0, 0, 0, 0, 0);
-            klog_printf(
+            POORDS4_LOG_DEBUG(
                 "[PoorDS4] reader bind user=0x%08x number=%d "
                 "result=0x%llx\n",
                 (uint32_t)candidate_user, candidate_number,
@@ -3185,7 +3253,7 @@ wireless_ds4_remote_reader_start(
             /* On retail 11.60 this API returns a positive handle-derived
              * value (for example 0x030d0301), not the literal boolean 1. */
             int api_identity = is_ds4 > 0;
-            klog_printf(
+            POORDS4_LOG_DEBUG(
                 "[PoorDS4] source candidate user=0x%08x index=%d "
                 "handle=0x%08x is_ds4=0x%08x opened=%d "
                 "connected=%d vid=0x%04x pid=0x%04x "
@@ -3212,11 +3280,13 @@ wireless_ds4_remote_reader_start(
                 (uint32_t)device_id_result, (uint32_t)device_id,
                 (uint32_t)device_info_result, device_info_copy,
                 device_vendor, device_product);
-            if (device_info_copy == 0) {
-                for (unsigned byte = 0; byte < 64; ++byte)
-                    klog_printf("%02x", device_info[byte]);
+            if (wireless_ds4_log_verbose_enabled()) {
+                if (device_info_copy == 0) {
+                    for (unsigned byte = 0; byte < 64; ++byte)
+                        klog_printf("%02x", device_info[byte]);
+                }
+                klog_printf("\n");
             }
-            klog_printf("\n");
             /* libScePad already reports its own view of this pad through the
              * is_ds4 field above (handle based). Ask again with the user id:
              * a positive result for a user whose pad opens but reports no
@@ -3225,7 +3295,7 @@ wireless_ds4_remote_reader_start(
                 int64_t isds4_by_user = pt_call(
                     target, fn_isds4, trap_mem,
                     (uint32_t)candidate_user, 0, 0, 0, 0, 0);
-                klog_printf(
+                POORDS4_LOG_DEBUG(
                     "[PoorDS4] pad is-ds4-connected by_user=0x%08x "
                     "result=0x%llx\n",
                     (uint32_t)candidate_user,
@@ -3253,15 +3323,17 @@ wireless_ds4_remote_reader_start(
                             target, probe_device_addr, controller_probe,
                             32u);
                 }
-                klog_printf(
+                POORDS4_LOG_DEBUG(
                     "[PoorDS4] pad controller-info user=0x%08x call=0x%08x "
                     "copy=%d data=",
                     (uint32_t)candidate_user, (uint32_t)controller_call,
                     controller_copy);
-                for (unsigned probe_index = 0; probe_index < 32u;
-                     ++probe_index)
-                    klog_printf("%02x", controller_probe[probe_index]);
-                klog_printf("\n");
+                if (wireless_ds4_log_verbose_enabled()) {
+                    for (unsigned probe_index = 0; probe_index < 32u;
+                         ++probe_index)
+                        klog_printf("%02x", controller_probe[probe_index]);
+                    klog_printf("\n");
+                }
             }
             /* A pad that opens but reports no device may still exist behind a
              * different pad type or index, so both are probed before giving up
@@ -3300,7 +3372,7 @@ wireless_ds4_remote_reader_start(
                         (void)pt_call(
                             target, fn_closepad, trap_mem,
                             (uint32_t)index_handle, 0, 0, 0, 0, 0);
-                    klog_printf(
+                    POORDS4_LOG_DEBUG(
                         "[PoorDS4] pad alt-index user=0x%08x index=%d "
                         "handle=0x%08x device_call=0x%08x device=0x%08x "
                         "copy=%d\n",
@@ -3332,7 +3404,7 @@ wireless_ds4_remote_reader_start(
                         (void)pt_call(
                             target, fn_closepad, trap_mem,
                             (uint32_t)alt_handle, 0, 0, 0, 0, 0);
-                    klog_printf(
+                    POORDS4_LOG_DEBUG(
                         "[PoorDS4] pad alt-type user=0x%08x type=%d "
                         "handle=0x%08x device_call=0x%08x device=0x%08x "
                         "copy=%d\n",
@@ -3353,7 +3425,7 @@ wireless_ds4_remote_reader_start(
             if (table_connected && table_vendor == UINT16_C(0x054c) &&
                 (table_product == UINT16_C(0x0ce6) ||
                  table_product == UINT16_C(0x0df2))) {
-                klog_printf(
+                POORDS4_LOG_DEBUG(
                     "[PoorDS4] reader skip native DualSense "
                     "user=0x%08x index=%d handle=0x%08x\n",
                     (uint32_t)candidate_user, pad_index,
@@ -3433,11 +3505,13 @@ wireless_ds4_remote_reader_start(
                 info_copy = mdbg_copyout(
                     target, probe_device_addr, pad_info, sizeof(pad_info));
         }
-        klog_printf("[PoorDS4] pad get-info result=0x%llx copy=%d data=",
+        POORDS4_LOG_DEBUG("[PoorDS4] pad get-info result=0x%llx copy=%d data=",
                     (unsigned long long)(uint64_t)info_result, info_copy);
-        for (unsigned info_index = 0; info_index < 32u; ++info_index)
-            klog_printf("%02x", pad_info[info_index]);
-        klog_printf("\n");
+        if (wireless_ds4_log_verbose_enabled()) {
+            for (unsigned info_index = 0; info_index < 32u; ++info_index)
+                klog_printf("%02x", pad_info[info_index]);
+            klog_printf("\n");
+        }
     }
     /* Prefer the DS4 of the currently active (foreground) user, so the player
      * who is actually interacting owns the bridged primary source. */
@@ -3500,7 +3574,7 @@ wireless_ds4_remote_reader_start(
         source_controller_probe[10] <= 8u &&
         source_connected > 0 && source_device_class >= 0 &&
         source_device_class <= 32;
-    klog_printf(
+    POORDS4_LOG_DEBUG(
         "[PoorDS4] source controller-info ABI=%d call=0x%08x "
         "copy=%d touch=%ux%u connection=%u connected=%d class=%d\n",
         g_source_controller_info_runtime_abi,
@@ -3637,7 +3711,7 @@ wireless_ds4_remote_reader_start(
             ? pt_call(target, fn_pthread_detach, trap_mem,
                       thread_id, 0, 0, 0, 0, 0)
             : -1;
-        klog_printf(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] reader thread detach read=%d id=0x%llx "
             "result=0x%llx\n",
             thread_read, (unsigned long long)thread_id,
@@ -3689,13 +3763,13 @@ cleanup:
                     target, libpad_base, handle,
                     &connected, &vendor, &product) == 0) {
                 identity_ok = remote_pad_is_known_ds4(connected, vendor, product);
-                klog_printf(
+                POORDS4_LOG_DEBUG(
                     "[PoorDS4] async source identity connected=%d "
                     "vid=0x%04x pid=0x%04x accepted=%d\n",
                     connected, vendor, product, identity_ok);
             }
             if (!identity_ok) {
-                klog_printf(
+                POORDS4_LOG_DEBUG(
                     "[PoorDS4] reader rejected connected non-DS4 "
                     "handle=0x%08x\n", (uint32_t)handle);
                 break;

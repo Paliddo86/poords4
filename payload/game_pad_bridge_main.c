@@ -87,6 +87,16 @@ static uint64_t g_last_state_poll_ms;
 
 void poords4_log(const char *format, ...);
 
+/* Log levels. Errors and the essential lifecycle information are always
+ * written; the detailed diagnostics use POORDS4_LOG_DEBUG and are written only
+ * when verbose logging is on (/data/poords4/verbose, or automatically after a
+ * failure). See wireless_ds4_log_verbose_poll(). */
+#define POORDS4_LOG_DEBUG(...) \
+    do { \
+        if (wireless_ds4_log_verbose_enabled()) \
+            poords4_log(__VA_ARGS__); \
+    } while (0)
+
 #define POORDS4_EVENT_WAITMODE_OR 2u
 #define SYSTEM_STATE_SHUTDOWN_ON_GOING 100u
 #define SYSTEM_STATE_SUSPEND_ON_GOING  300u
@@ -153,11 +163,11 @@ open_system_state_monitor(void)
         &focus_flag, "SceShellCoreUtilAppFocus");
     if (g_app_focus_open_result == 0) {
         g_app_focus_flag = focus_flag;
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] app-focus flag opened handle=0x%lx\n",
             (unsigned long)focus_flag);
     } else {
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] app-focus flag unavailable result=0x%08x\n",
             (uint32_t)g_app_focus_open_result);
     }
@@ -167,11 +177,11 @@ open_system_state_monitor(void)
         &info_flag, "SceSystemStateMgrInfo");
     if (g_system_state_info_open_result == 0) {
         g_system_state_info_flag = info_flag;
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] lifecycle info flag opened handle=0x%lx\n",
             (unsigned long)info_flag);
     } else {
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] lifecycle info flag unavailable result=0x%08x\n",
             (uint32_t)g_system_state_info_open_result);
     }
@@ -181,11 +191,11 @@ open_system_state_monitor(void)
         &status_flag, "SceSystemStateMgrStatus");
     if (g_system_state_status_open_result == 0) {
         g_system_state_status_flag = status_flag;
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] lifecycle status flag opened handle=0x%lx\n",
             (unsigned long)status_flag);
     } else {
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] lifecycle status flag unavailable result=0x%08x\n",
             (uint32_t)g_system_state_status_open_result);
     }
@@ -209,7 +219,7 @@ poll_app_focus(void)
         g_app_focus_flag, UINT64_MAX,
         POORDS4_EVENT_WAITMODE_OR, &pattern);
     if (result != g_app_focus_poll_result) {
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] app-focus poll result=0x%08x\n",
             (uint32_t)result);
         g_app_focus_poll_result = result;
@@ -217,7 +227,7 @@ poll_app_focus(void)
     if (result != 0)
         return;
     if (!g_app_focus_pattern_known || pattern != g_app_focus_pattern) {
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] app-focus pattern=0x%016llx "
             "app_id=0x%08x high=0x%08x\n",
             (unsigned long long)pattern, (uint32_t)pattern,
@@ -254,7 +264,7 @@ poll_system_state_info(void)
         g_system_state_info_flag, UINT64_MAX,
         POORDS4_EVENT_WAITMODE_OR, &pattern);
     if (result != g_system_state_info_poll_result) {
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] lifecycle info poll result=0x%08x\n",
             (uint32_t)result);
         g_system_state_info_poll_result = result;
@@ -266,7 +276,7 @@ poll_system_state_info(void)
     g_system_state_info_pattern = pattern;
     if (!g_system_state_info_state_known ||
         state != g_system_state_info_state) {
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] lifecycle info state=%u pattern=0x%016llx\n",
             state, (unsigned long long)pattern);
         g_system_state_info_state = state;
@@ -291,7 +301,7 @@ poll_system_state_status(void)
         g_system_state_status_flag, UINT64_MAX,
         POORDS4_EVENT_WAITMODE_OR, &pattern);
     if (result != g_system_state_status_poll_result) {
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] lifecycle status poll result=0x%08x\n",
             (uint32_t)result);
         g_system_state_status_poll_result = result;
@@ -587,7 +597,7 @@ game_bridge_notify_kernel(const char *message)
         snprintf(request.message, sizeof(request.message), "%s", message);
     int32_t result = sceKernelSendNotificationRequest(
         0, &request, sizeof(request), 0);
-    poords4_log(
+    POORDS4_LOG_DEBUG(
         "[PoorDS4] notification result=0x%08x message=%s\n",
         (uint32_t)result, message ? message : "");
 }
@@ -639,9 +649,15 @@ game_bridge_notify_native(const char *message)
     if (length <= 0 || (size_t)length >= sizeof(payload))
         return 0;
     int result = sceNotificationSend(0xfe /* system */, 1, payload);
-    poords4_log(
-        "[PoorDS4] native notification result=0x%08x message=%s\n",
-        (uint32_t)result, message);
+    if (result == 0) {
+        POORDS4_LOG_DEBUG(
+            "[PoorDS4] native notification result=0x%08x message=%s\n",
+            (uint32_t)result, message);
+    } else {
+        poords4_log(
+            "[PoorDS4] native notification failed result=0x%08x "
+            "message=%s\n", (uint32_t)result, message);
+    }
     return result == 0 ? 1 : 0;
 }
 
@@ -1270,7 +1286,7 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
             }
         }
     }
-    poords4_log(
+    POORDS4_LOG_DEBUG(
         "[PoorDS4] primary_slot=%u dualsense_slot=%d game_pad_index=%d\n",
         primary_slot, dualsense_slot, initial_status.game_pad_index);
     last_bridge_status = initial_status;
@@ -1361,7 +1377,7 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
                     input_transitions++;
                     if (transition_logs < 32u ||
                         (input_transitions % 128u) == 0) {
-                        poords4_log(
+                        POORDS4_LOG_DEBUG(
                             "[PoorDS4] SOURCE INPUT transition=%u frame=%u "
                             "seq=%u buttons=0x%08x sticks=%u,%u,%u,%u "
                             "triggers=%u,%u connected=%u timestamp=%llu "
@@ -1502,7 +1518,8 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
 
         if (input_frames != 0 && (input_frames % 600u) == 0 &&
             input_frames != last_health_frame) {
-            poords4_log(
+            wireless_ds4_log_verbose_poll();
+            POORDS4_LOG_DEBUG(
                 "[PoorDS4] BRIDGE HEALTH in=%u out=%u seq=%u conn=%u "
                 "buttons=0x%08x sticks=%u,%u,%u,%u triggers=%u,%u "
                 "timestamp=%llu count=%u activity=%u transitions=%u "
@@ -1633,6 +1650,7 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
             consecutive_write_failures >= 1200u ||
             consecutive_bridge_health_failures >= 5u ||
             !game_alive) {
+            wireless_ds4_log_enable_verbose("bridge health failures");
             poords4_log(
                 "[PoorDS4] bridge stopping read_streak=%u "
                 "write_streak=%u bridge_health_streak=%u "
@@ -1773,7 +1791,7 @@ collect_user_candidates(int32_t user_ids[POORDS4_MAX_USER_CANDIDATES],
     int32_t foreground_rc = sceUserServiceGetForegroundUser(&foreground_user);
     int32_t initial_rc = sceUserServiceGetInitialUser(&initial_user);
     int32_t login_rc = sceUserServiceGetLoginUserIdList(login_users);
-    poords4_log(
+    POORDS4_LOG_DEBUG(
         "[PoorDS4] user-service fg=0x%08x(%d) initial=0x%08x(%d) "
         "login=0x%08x,0x%08x,0x%08x,0x%08x(%d)\n",
         (uint32_t)foreground_user, (int)foreground_rc,
@@ -1807,7 +1825,7 @@ start_wireless_reader(PoorDS4PadSource *source, pid_t *reader_pid,
         memset(user_numbers, 0xff, sizeof(user_numbers));
         uint32_t user_count =
             collect_user_candidates(user_ids, user_numbers);
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] user candidates n=%u "
             "0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x\n",
             user_count,
@@ -1844,14 +1862,14 @@ start_wireless_reader(PoorDS4PadSource *source, pid_t *reader_pid,
             int probe_result = wireless_ds4_game_bridge_find_target(
                 &probe_game_pid);
             observed_game_pid = probe_game_pid;
-            poords4_log(
+            POORDS4_LOG_DEBUG(
                 "[PoorDS4] game visibility while waiting pid=%d "
                 "result=%d\n",
                 probe_game_pid, probe_result);
         }
         retry_count++;
         if (retry_count == 1 || (retry_count % 12u) == 0)
-            poords4_log(
+            POORDS4_LOG_DEBUG(
                 "[PoorDS4] wireless reader unavailable; retry=%u\n",
                 retry_count);
         write_supervisor_state(
@@ -1983,6 +2001,7 @@ main(void)
     }
 
     poords4_log_reset();
+    wireless_ds4_log_verbose_poll();
     (void)unlink(GAME_BRIDGE_STOP_FILE);
     (void)unlink(GAME_BRIDGE_RESET_FILE);
     install_shutdown_signal_handlers();
@@ -2011,6 +2030,7 @@ main(void)
     if (start_wireless_reader(
             &g_pad_source, &reader_pid, &reader_args,
             sessions, total_output_frames) != 0) {
+        wireless_ds4_log_enable_verbose("reader start failed");
         poords4_log("[PoorDS4] wireless reader start failed\n");
         goto cleanup;
     }
@@ -2028,6 +2048,7 @@ main(void)
     for (;;) {
         if (lifecycle_should_stop())
             break;
+        wireless_ds4_log_verbose_poll();
 
         /* Never modify a newly launched game while the source reader is
          * absent. A reader can be lost during Bluetooth re-publication at the
@@ -2071,7 +2092,7 @@ main(void)
                 process_alive(reader_pid)) {
                 int stop_result = wireless_ds4_remote_reader_stop(
                     reader_pid, reader_args);
-                poords4_log(
+                POORDS4_LOG_DEBUG(
                     "[PoorDS4] pre-game reader stop=%d\n",
                     stop_result);
                 if (stop_result != 0) {
@@ -2092,6 +2113,7 @@ main(void)
             if (start_wireless_reader(
                     &recovered_source, &reader_pid, &reader_args,
                     sessions, total_output_frames) != 0) {
+                wireless_ds4_log_enable_verbose("reader restore failed");
                 poords4_log(
                     "[PoorDS4] wireless reader restore failed\n");
                 break;
@@ -2110,7 +2132,7 @@ main(void)
             uint64_t now = monotonic_milliseconds();
             if (last_waiting_source_log_ms == 0 ||
                 (now != 0 && now >= last_waiting_source_log_ms + 10000u)) {
-                poords4_log(
+                POORDS4_LOG_DEBUG(
                     "[PoorDS4] SOURCE HEALTH waiting seq=%u conn=%u "
                     "buttons=0x%08x sticks=%u,%u,%u,%u triggers=%u,%u "
                     "timestamp=%llu count=%u mode=%u queued=0x%08x "
@@ -2262,7 +2284,7 @@ main(void)
                     }
                     if ((install_result == -4 && (install_retries % 25u) == 0) ||
                         (install_result != -4 && ((install_retries % 10u) == 0 || install_retries <= 5u))) {
-                        poords4_log(
+                        POORDS4_LOG_DEBUG(
                             "[PoorDS4] game not ready pid=%d result=%d "
                             "retry=%u/%u delay_ms=%u\n",
                             game_pid, install_result, install_retries,
@@ -2275,7 +2297,7 @@ main(void)
                         break;
                     continue;
                 }
-                poords4_log(
+                POORDS4_LOG_DEBUG(
                     "[PoorDS4] game skipped pid=%d result=%d retries=%u; "
                     "waiting for it to exit\n",
                     game_pid, install_result, install_retries);
@@ -2286,12 +2308,14 @@ main(void)
                 install_retries = 0;
                 continue;
             }
+            wireless_ds4_log_enable_verbose("game bridge install failed");
             poords4_log(
                 "[PoorDS4] game bridge install failed result=%d\n",
                 install_result);
             break;
         }
         if (wait_for_game_bridge_ready(game_pid, bridge_args) != 0) {
+            wireless_ds4_log_enable_verbose("game bridge not ready");
             poords4_log(
                 "[PoorDS4] game bridge did not become ready pid=%d\n",
                 game_pid);
@@ -2300,11 +2324,13 @@ main(void)
             int bridge_cleanup = teardown_game_bridge(
                 game_pid, bridge_args, bridge_safe_cleanup,
                 &bridge_cleanup_mode);
+            wireless_ds4_log_enable_verbose("bridge-ready cleanup");
             poords4_log(
                 "[PoorDS4] bridge-ready failure cleanup=%d mode=%s\n",
                 bridge_cleanup,
                 bridge_cleanup_mode ? bridge_cleanup_mode : "unknown");
             if (bridge_cleanup != 0 && process_alive(game_pid)) {
+                wireless_ds4_log_enable_verbose("bridge cleanup failed");
                 poords4_log(
                     "[PoorDS4] bridge cleanup failed pid=%d; "
                     "not reinstalling until this game exits\n",
@@ -2332,6 +2358,7 @@ main(void)
                         break;
                     continue;
                 }
+                wireless_ds4_log_enable_verbose("bridge-ready failed");
                 poords4_log(
                     "[PoorDS4] bridge-ready failed repeatedly pid=%d; "
                     "waiting for it to exit\n",
@@ -2453,6 +2480,7 @@ main(void)
             int recovery_cleanup = teardown_game_bridge(
                 game_pid, bridge_args, safe_cleanup,
                 &recovery_cleanup_mode);
+            wireless_ds4_log_enable_verbose("retained bridge recovery failed");
             poords4_log(
                 "[PoorDS4] retained bridge recovery failed; "
                 "cleanup=%s result=%d\n",
@@ -2474,6 +2502,7 @@ main(void)
             break;
         if (end_reason == SESSION_END_CLEANUP_FAILED &&
             process_alive(game_pid)) {
+            wireless_ds4_log_enable_verbose("bridge cleanup failed");
             poords4_log(
                 "[PoorDS4] bridge cleanup failed pid=%d; "
                 "not reinstalling until this game exits\n",
@@ -2485,6 +2514,7 @@ main(void)
         }
         if (end_reason == SESSION_END_READER_FAILED &&
             process_alive(game_pid)) {
+            wireless_ds4_log_enable_verbose("reader unavailable");
             poords4_log(
                 "[PoorDS4] reader unavailable after clean bridge removal; "
                 "restoring before reinstall pid=%d\n",
@@ -2520,6 +2550,7 @@ main(void)
         if ((end_reason == SESSION_END_BRIDGE_HEALTH_FAILED ||
              end_reason == SESSION_END_WRITER_FAILED) &&
             process_alive(game_pid)) {
+            wireless_ds4_log_enable_verbose("bridge health/writer error");
             poords4_log(
                 "[PoorDS4] bridge health/writer error reason=%d (%s); "
                 "recovering pid=%d\n",
@@ -2552,7 +2583,7 @@ cleanup:
             "[PoorDS4] wireless reader stop=%d\n", reader_stop);
     }
     else if (reader_pid >= 0 && reader_args != 0) {
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] wireless reader cleanup skipped "
             "skip_remote=%d alive=%d\n",
             g_skip_remote_cleanup, process_alive(reader_pid));
@@ -2560,7 +2591,7 @@ cleanup:
     if (g_system_state_status_flag >= 0) {
         int close_result = sceKernelCloseEventFlag(
             g_system_state_status_flag);
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] lifecycle status flag close=0x%08x\n",
             (uint32_t)close_result);
         g_system_state_status_flag = -1;
@@ -2568,14 +2599,14 @@ cleanup:
     if (g_system_state_info_flag >= 0) {
         int close_result = sceKernelCloseEventFlag(
             g_system_state_info_flag);
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] lifecycle info flag close=0x%08x\n",
             (uint32_t)close_result);
         g_system_state_info_flag = -1;
     }
     if (g_app_focus_flag >= 0) {
         int close_result = sceKernelCloseEventFlag(g_app_focus_flag);
-        poords4_log(
+        POORDS4_LOG_DEBUG(
             "[PoorDS4] app-focus flag close=0x%08x\n",
             (uint32_t)close_result);
         g_app_focus_flag = -1;

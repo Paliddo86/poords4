@@ -38,6 +38,15 @@ void wireless_ds4_set_foreground_user(int32_t user_id);
  * runtime so no symbol is imported at load time. */
 intptr_t wireless_ds4_native_log_resolve(void);
 
+/* Runtime log verbosity. Release builds write only errors and the essential
+ * lifecycle information; the detailed diagnostics are written only when the
+ * user creates /data/poords4/verbose, or automatically after a failure so that
+ * the log already carries the context needed to diagnose it. */
+int wireless_ds4_log_verbose_enabled(void);
+void wireless_ds4_log_set_verbose(int enabled);
+void wireless_ds4_log_enable_verbose(const char *reason);
+void wireless_ds4_log_verbose_poll(void);
+
 typedef struct {
     int32_t ready;
     int32_t stop;

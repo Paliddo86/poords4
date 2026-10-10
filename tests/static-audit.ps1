@@ -43,6 +43,33 @@ Assert-True ($makefile.Contains('STOP_TARGET   := PoorDS4-stop.elf')) `
     'Stop payload does not use the PoorDS4 release name.'
 Assert-True ($main.Contains('#define POORDS4_DATA_DIR   "/data/poords4"')) `
     'Runtime data directory does not use the PoorDS4 name.'
+Assert-True ($bridge.Contains(
+    'define POORDS4_VERBOSE_FILE    POORDS4_DATA_DIR "/verbose"')) `
+    'Verbose log switch file is not wired to the runtime data directory.'
+Assert-True ($bridge.Contains('wireless_ds4_log_verbose_enabled(void)') `
+    -and $bridge.Contains('wireless_ds4_log_enable_verbose(const char *reason)') `
+    -and $bridge.Contains('wireless_ds4_log_verbose_poll(void)')) `
+    'Runtime log verbosity helpers are missing.'
+Assert-True ($main.Contains('#define POORDS4_LOG_DEBUG(...)')) `
+    'Bridge is missing the verbose-only log macro.'
+Assert-True ($bridge.Contains('POORDS4_LOG_DEBUG("[WirelessDS4] pt_call: fn=')) `
+    'Per-call ptrace tracing is not gated behind verbose logging.'
+Assert-True (-not $bridge.Contains('klog_printf("[PoorDS4] source candidate user=') `
+    -and -not $bridge.Contains('klog_printf("[PoorDS4] pad alt-index user=') `
+    -and -not $bridge.Contains('klog_printf("[PoorDS4] pad alt-type user=') `
+    -and -not $bridge.Contains('klog_printf("[PoorDS4] pad controller-info user=') `
+    -and -not $bridge.Contains('klog_printf("[PoorDS4] pad is-ds4-connected by_user=')) `
+    'Per-candidate pad diagnostics are not gated behind verbose logging.'
+Assert-True ($main.Contains("wireless_ds4_log_enable_verbose(`"reader start failed`");")) `
+    'Failures do not switch the detailed log on for post-mortem analysis.'
+$hexGuards = ([regex]::Matches($bridge,
+    [regex]::Escape('if (wireless_ds4_log_verbose_enabled()) {'))).Count
+Assert-True ($hexGuards -ge 3) `
+    'Hex dumps still run without verbose logging.'
+$verbosePolls = ([regex]::Matches($main,
+    [regex]::Escape('wireless_ds4_log_verbose_poll();'))).Count
+Assert-True ($verbosePolls -ge 3) `
+    'Verbose log switch is not polled from the supervisor loops.'
 Assert-True ($main.Contains('install_result == 0 ? 5u : 15u')) `
     'Bounded retry for a transient fail-closed game snapshot is missing.'
 Assert-True ($main.Contains(
