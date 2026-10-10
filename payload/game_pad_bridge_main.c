@@ -63,6 +63,10 @@ static int g_supervisor_lock_fd = -1;
 static PoorDS4PadSource g_pad_source = {-1, -1, -1, 0, 0};
 static pid_t g_reader_pid = -1;
 static intptr_t g_reader_args;
+/* Foreground user the current reader was started with. The reader's candidate
+ * list covers the users known at that moment, so a profile switch while
+ * waiting requires a fresh discovery. */
+static int32_t g_reader_foreground_user = INT32_MIN;
 static intptr_t g_bridge_args;
 static size_t g_log_bytes;
 static volatile sig_atomic_t g_shutdown_requested;
@@ -1979,6 +1983,7 @@ start_wireless_reader(PoorDS4PadSource *source, pid_t *reader_pid,
             int32_t foreground_user = -1;
             (void)sceUserServiceGetForegroundUser(&foreground_user);
             wireless_ds4_set_foreground_user(foreground_user);
+            g_reader_foreground_user = foreground_user;
         }
         if (wireless_ds4_remote_reader_start(
                 user_ids, user_numbers, user_count, source,
@@ -2187,6 +2192,9 @@ main(void)
     uint64_t launch_candidate_since_ms = 0;
     uint64_t last_waiting_source_log_ms = 0;
     pid_t discovery_refresh_pid = -1;
+    /* -1 until the first reader snapshot is observed, so the "controller
+     * appeared" refresh only fires on a real 0 -> 1 transition. */
+    int reader_connected_was = -1;
     for (;;) {
         if (lifecycle_should_stop())
             break;
@@ -2208,12 +2216,34 @@ main(void)
                 ? wireless_ds4_remote_reader_status(
                       reader_pid, reader_args, &reader_preflight)
                 : -1;
-        int reader_ready = reader_preflight_result == 0 &&
+        /* A healthy reader without a connected controller must be kept: its
+         * in-target rescan (~3 s) discovers controllers for every user it was
+         * started with, while restarting it would repeat the whole ptrace
+         * discovery (~150 remote calls, each one stopping RemotePlay) on every
+         * poll. The reader is restarted only when it is unhealthy, when a
+         * restart was requested (game launch, reset shortcut) or when the
+         * foreground user changed, because its candidate list is then stale. */
+        int reader_healthy = reader_preflight_result == 0 &&
             reader_preflight.ready == 1 &&
             reader_preflight.stop == 0 &&
-            reader_preflight.last_result == 0 &&
-            reader_preflight.connected != 0;
-        if (reader_restart_required || !reader_ready) {
+            reader_preflight.last_result == 0;
+        int reader_connected = reader_preflight.connected != 0;
+        int32_t waiting_foreground_user = -1;
+        (void)sceUserServiceGetForegroundUser(&waiting_foreground_user);
+        int foreground_changed =
+            waiting_foreground_user != g_reader_foreground_user;
+        if (reader_connected && reader_connected_was == 0) {
+            /* The controller appeared while waiting (any profile, discovered by
+             * the reader rescan): refresh once so the install uses a source
+             * description matching the pad that is actually there. */
+            poords4_log(
+                "[PoorDS4] controller appeared while waiting; refreshing "
+                "source discovery\n");
+            reader_restart_required = 1;
+        }
+        reader_connected_was = reader_connected ? 1 : 0;
+        if (reader_restart_required || !reader_healthy ||
+            foreground_changed) {
             poords4_log(
                 "[PoorDS4] restoring wireless reader before game scan "
                 "pid=%d args=0x%lx snapshot=%d ready=%d stop=%d "
@@ -2366,6 +2396,18 @@ main(void)
                 "waiting_game_launch_grace", observed_game_pid,
                 sessions, total_output_frames, 0);
             if (sleep_interruptible(250000) != 0)
+                break;
+            continue;
+        }
+
+        if (!reader_connected) {
+            /* A game is visible but no controller is bridged yet: wait for the
+             * reader rescan instead of installing a bridge with an empty
+             * source. The controller can arrive on any logged-in profile. */
+            write_supervisor_state(
+                "waiting_for_wireless_controller", observed_game_pid,
+                sessions, total_output_frames, 0);
+            if (sleep_interruptible(SOURCE_DISCOVERY_RETRY_US) != 0)
                 break;
             continue;
         }
