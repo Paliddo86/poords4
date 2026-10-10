@@ -10,11 +10,11 @@ function Assert-True {
 }
 
 $main = [IO.File]::ReadAllText(
-    (Join-Path $repo 'payload\game_pad_bridge_main.c'))
+    (Join-Path $repo 'payload/game_pad_bridge_main.c'))
 $bridge = [IO.File]::ReadAllText(
-    (Join-Path $repo 'payload\wireless_ds4.c'))
+    (Join-Path $repo 'payload/wireless_ds4.c'))
 $makefile = [IO.File]::ReadAllText(
-    (Join-Path $repo 'payload\Makefile'))
+    (Join-Path $repo 'payload/Makefile'))
 
 Assert-True ($makefile.Contains('RC_VERSION := 71')) `
     'Makefile RC version is not 71.'
@@ -172,7 +172,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 $expectedTracked = @(
     '.gitattributes',
+    '.github/workflows/build-and-release.yml',
     '.gitignore',
+    '.gitmodules',
     'CHANGELOG.md',
     'LICENSE',
     'NOTICE.md',

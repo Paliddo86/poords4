@@ -90,6 +90,41 @@ make -C payload clean
 make -C payload release
 ```
 
+### Local build on macOS
+
+The SDK binary distribution is POSIX and CPU-architecture independent, so a
+local macOS build only needs the SDK plus LLVM 18 from Homebrew:
+
+```sh
+# LLVM 18 provides llvm-config and llvm-strip, used by prospero.mk
+brew install llvm@18 wget
+
+# PS5 payload SDK binary distribution
+curl -L -o /tmp/ps5-payload-sdk.zip \
+  https://github.com/ps5-payload-dev/sdk/releases/latest/download/ps5-payload-sdk.zip
+sudo unzip -q -d /opt /tmp/ps5-payload-sdk.zip
+
+# Environment (append to ~/.zshrc to persist)
+export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+export LLVM_CONFIG="$(brew --prefix llvm@18)/bin/llvm-config"
+export PATH="$PS5_PAYLOAD_SDK/bin:$(brew --prefix llvm@18)/bin:$PATH"
+
+# Build, audit, deploy
+make -C payload clean
+make -C payload release
+pwsh -File tests/static-audit.ps1
+make -C payload deploy PS5_HOST=<console-ip>
+```
+
+Notes for the local loop: `pwsh` comes from `brew install --cask powershell`;
+`make -C payload audit` is only a stub that prints a notice, so the audit must
+be run with `pwsh` directly; `make -C payload release` needs `llvm-strip` on
+`PATH`; `make -C payload deploy` streams the ELF to the console's loader with
+`nc` (override with `PORT=`). The `ps5-sdk` submodule is a source checkout
+rather than an installed SDK, so using it directly requires
+`make DESTDIR=... install` with clang-18/lld-18; the released zip is simply
+unpacked and used through `PS5_PAYLOAD_SDK`.
+
 On the Windows PS5 development workspace used for release builds, load the
 environment and select its target wrapper explicitly:
 
@@ -99,7 +134,9 @@ make -C payload CC=ps5-clang.cmd clean
 make -C payload CC=ps5-clang.cmd release audit
 ```
 
-RC71 release assets use ps5-payload-sdk v0.42:
+RC release assets are produced by the GitHub workflow with the latest
+ps5-payload-sdk release (v0.43 at the time of writing; earlier RCs such as
+rc64 used v0.42):
 
 | Output | Purpose |
 | --- | --- |
