@@ -16,8 +16,8 @@ $bridge = [IO.File]::ReadAllText(
 $makefile = [IO.File]::ReadAllText(
     (Join-Path $repo 'payload\Makefile'))
 
-Assert-True ($makefile.Contains('RC_VERSION := 68')) `
-    'Makefile RC version is not 68.'
+Assert-True ($makefile.Contains('RC_VERSION := 71')) `
+    'Makefile RC version is not 71.'
 Assert-True (-not $makefile.Contains('-lScePad')) `
     'Build still links libScePad despite using runtime-resolved game exports.'
 Assert-True (-not $makefile.Contains('-lpthread')) `

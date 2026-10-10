@@ -518,6 +518,8 @@ extern int32_t sceUserServiceInitialize(void *params);
 extern int32_t sceUserServiceGetInitialUser(int32_t *out_user_id);
 extern int32_t sceUserServiceGetForegroundUser(int32_t *out_user_id);
 extern int32_t sceUserServiceGetLoginUserIdList(int32_t out_user_ids[4]);
+extern int32_t sceUserServiceGetUserName(
+    int32_t user_id, char *user_name, size_t size);
 extern int32_t sceKernelSendNotificationRequest(
     int unk0, void *request, size_t size, int unk1);
 
@@ -586,6 +588,28 @@ game_bridge_notify(const char *message)
     poords4_log(
         "[PoorDS4] notification result=0x%08x message=%s\n",
         (uint32_t)result, message ? message : "");
+}
+
+/* Adds the display name of the user owning the activating DS4 to a toast. */
+static void
+notify_with_user(const char *prefix, const char *suffix, int32_t user_id)
+{
+    char label[96];
+    char message[256];
+    memset(label, 0, sizeof(label));
+    if (user_id >= 0) {
+        char name[64];
+        memset(name, 0, sizeof(name));
+        if (sceUserServiceGetUserName(user_id, name, sizeof(name)) == 0 &&
+            name[0] != 0)
+            snprintf(label, sizeof(label), " (user %s)", name);
+        else
+            snprintf(label, sizeof(label), " (user 0x%08x)",
+                     (uint32_t)user_id);
+    }
+    snprintf(message, sizeof(message), "PoorDS4: %s%s%s",
+             prefix ? prefix : "", label, suffix ? suffix : "");
+    game_bridge_notify(message);
 }
 
 typedef enum {
@@ -1629,16 +1653,6 @@ add_user_candidate(int32_t user_id, int32_t user_number, int32_t *user_ids,
     (*count)++;
 }
 
-static int32_t
-login_user_number(const int32_t *login_users, int32_t user_id)
-{
-    for (unsigned index = 0; index < 4; ++index) {
-        if (user_id >= 0 && login_users[index] == user_id)
-            return (int32_t)(index + 1);
-    }
-    return -1;
-}
-
 static uint32_t
 collect_user_candidates(int32_t user_ids[POORDS4_MAX_USER_CANDIDATES],
                         int32_t user_numbers[POORDS4_MAX_USER_CANDIDATES])
@@ -1647,18 +1661,24 @@ collect_user_candidates(int32_t user_ids[POORDS4_MAX_USER_CANDIDATES],
     int32_t foreground_user = -1;
     int32_t login_users[4] = {-1, -1, -1, -1};
     uint32_t count = 0;
-    (void)sceUserServiceGetForegroundUser(&foreground_user);
-    (void)sceUserServiceGetInitialUser(&initial_user);
-    (void)sceUserServiceGetLoginUserIdList(login_users);
-    add_user_candidate(
-        foreground_user, login_user_number(login_users, foreground_user),
-        user_ids, user_numbers, &count);
+    int32_t foreground_rc = sceUserServiceGetForegroundUser(&foreground_user);
+    int32_t initial_rc = sceUserServiceGetInitialUser(&initial_user);
+    int32_t login_rc = sceUserServiceGetLoginUserIdList(login_users);
+    poords4_log(
+        "[PoorDS4] user-service fg=0x%08x(%d) initial=0x%08x(%d) "
+        "login=0x%08x,0x%08x,0x%08x,0x%08x(%d)\n",
+        (uint32_t)foreground_user, (int)foreground_rc,
+        (uint32_t)initial_user, (int)initial_rc,
+        (uint32_t)login_users[0], (uint32_t)login_users[1],
+        (uint32_t)login_users[2], (uint32_t)login_users[3], (int)login_rc);
+    /* The payload process usually reports only the foreground user; the
+     * reader merges the user ids it finds in libScePad's own client table,
+     * which lists every assigned pad. */
+    add_user_candidate(foreground_user, -1, user_ids, user_numbers, &count);
     for (unsigned index = 0; index < 4; ++index)
         add_user_candidate(login_users[index], (int32_t)(index + 1),
                            user_ids, user_numbers, &count);
-    add_user_candidate(
-        initial_user, login_user_number(login_users, initial_user),
-        user_ids, user_numbers, &count);
+    add_user_candidate(initial_user, -1, user_ids, user_numbers, &count);
     return count;
 }
 
@@ -1678,6 +1698,14 @@ start_wireless_reader(PoorDS4PadSource *source, pid_t *reader_pid,
         memset(user_numbers, 0xff, sizeof(user_numbers));
         uint32_t user_count =
             collect_user_candidates(user_ids, user_numbers);
+        poords4_log(
+            "[PoorDS4] user candidates n=%u "
+            "0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x\n",
+            user_count,
+            (uint32_t)user_ids[0], (uint32_t)user_ids[1],
+            (uint32_t)user_ids[2], (uint32_t)user_ids[3],
+            (uint32_t)user_ids[4], (uint32_t)user_ids[5],
+            (uint32_t)user_ids[6], (uint32_t)user_ids[7]);
         {
             int32_t foreground_user = -1;
             (void)sceUserServiceGetForegroundUser(&foreground_user);
@@ -1857,8 +1885,12 @@ main(void)
     poords4_log(
         "[PoorDS4] game bridge start rc=%d auto_watch=%d\n",
         POORDS4_RC_VERSION, POORDS4_AUTO_WATCH);
-    game_bridge_notify(
-        "PoorDS4: wireless DS4 bridge injected; starting reader");
+    {
+        int32_t foreground_user = -1;
+        (void)sceUserServiceGetForegroundUser(&foreground_user);
+        notify_with_user("wireless DS4 bridge injected",
+                         "; starting reader", foreground_user);
+    }
 
     if (start_wireless_reader(
             &g_pad_source, &reader_pid, &reader_args,
@@ -1870,8 +1902,8 @@ main(void)
      * when the user stops it before launching a game. */
     exit_code = 0;
     write_supervisor_state("waiting_for_game", -1, 0, 0, 1);
-    game_bridge_notify(
-        "PoorDS4: wireless DS4 ready; waiting for a PS5 game");
+    notify_with_user("wireless DS4 ready",
+                     "; waiting for a PS5 game", g_pad_source.user_id);
 
     pid_t launch_candidate_pid = -1;
     uint64_t launch_candidate_since_ms = 0;
@@ -2202,8 +2234,8 @@ main(void)
             "session=%u\n",
             reader_pid, (unsigned long)reader_args,
             game_pid, (unsigned long)bridge_args, sessions);
-        game_bridge_notify(
-            "PoorDS4: wireless DS4 active in the PS5 game");
+        notify_with_user("wireless DS4 active in the PS5 game", "",
+                         g_pad_source.user_id);
         GameSessionEndReason end_reason = SESSION_END_STOP_REQUESTED;
         for (;;) {
             unsigned session_output_frames = run_game_session(

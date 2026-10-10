@@ -3,6 +3,37 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc71] - 2026-09-30
+
+### Fixed
+
+- **User list read from libScePad's own client table**:
+  - Replaced the rc70 "adjacent user id window" heuristic (`collect_user_candidates`).
+  - Added `remote_pad_table_users()` in `wireless_ds4.c`: it enumerates the distinct user ids in libScePad's **client table** of the process PoorDS4 is attached to (handle at `+0x1c`, user id at `+0x24`, stride/table offsets already used by `remote_pad_identity`). libScePad populates that table for every assigned pad, so it lists the users that actually own a controller — the same 3 users the game's own table shows.
+  - `wireless_ds4_remote_reader_start` merges those ids with the supervisor's list and probes all of them, so the reader is initialised with the real user set on its first start (`pad table users n=...` in the log).
+  - The reader symbol log now also reports `userswithpads=0x...`: `scePadGetUsersWithPads` is only **resolved, never called** (zero risk), to verify on real firmware whether an official accessor exists.
+
+## [0.1.0-rc70] - 2026-09-30
+
+### Fixed
+
+- **Complete user list at reader start (no reader restart)**:
+  - Reverted the rc69 "stop and restart the reader when the game starts" behaviour.
+  - Root cause from the rc68 logs: `sceUserServiceGetLoginUserIdList` reports only one entry in the payload process, so `collect_user_candidates` handed the reader a single user (`reader start: ... users=1`) and controllers bound to another profile were never probed. The DS4 binding itself worked (`reader bind ... result=0x0`).
+  - `collect_user_candidates` now also probes a bounded window of **adjacent user ids** around the foreground user (PS5 user ids are allocated sequentially, e.g. `0x...483/484/485`), so the reader is initialised with the correct candidate list on its **first** start — no restart needed.
+  - Added a `user-service fg=... initial=... login=...` diagnostic line so the payload's raw view of the user service is visible.
+
+## [0.1.0-rc69] - 2026-09-30
+
+### Fixed / Added
+
+- **Reader refresh at game start (multi-user discovery)**:
+  - `run_game_session` now **stops and restarts the reader once the game is up** so the DS4 discovery runs again with a freshly collected user list. This addresses the root cause observed in the rc68 logs: `sceUserServiceGetLoginUserIdList` returns only one entry in the payload process, so the reader (`reader start: ... users=1`) probed just the foreground user and never instantiated the DS4 bound to another profile.
+  - Logs `game-start reader refresh source user=... index=... handle=...` and, on each discovery, `user candidates n=... 0x... 0x...` so the visible user list is immediately verifiable.
+
+- **User name in the activation toasts**:
+  - Added `sceUserServiceGetUserName` and `notify_with_user()`; the "bridge injected / starting reader", "wireless DS4 ready" and "wireless DS4 active in the PS5 game" notifications now show the display name of the user owning the DS4 that activated PoorDS4 (e.g. `PoorDS4: wireless DS4 ready (user Mario); waiting for a PS5 game`).
+
 ## [0.1.0-rc68] - 2026-09-30
 
 ### Changed
