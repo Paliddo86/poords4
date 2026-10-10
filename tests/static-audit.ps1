@@ -41,6 +41,11 @@ Assert-True ($makefile.Contains(
     'Release target does not remove workstation paths from DWARF data.'
 Assert-True (-not $makefile.Contains('-lSceNet')) `
     'Build still links the SDK networking library without a network import.'
+Assert-True (-not $makefile.Contains('EXP_TARGET')) `
+    'Build still produces the retired experimental artifact.'
+Assert-True ($makefile.Contains('tests/static-audit.ps1') `
+    -and $makefile.Contains('tests/validate_notify_json.py')) `
+    'The audit target does not run the static audit and the payload validator.'
 Assert-True ($makefile.Contains('TARGET        := PoorDS4-v$(VERSION).elf')) `
     'Automatic payload does not use the PoorDS4 release name.'
 Assert-True ($makefile.Contains('STATUS_TARGET := PoorDS4-status.elf')) `
@@ -122,9 +127,14 @@ Assert-True ($main.Contains(
 Assert-True ($main.Contains(
     'reader_preflight.connected != 0')) `
     'Pre-game reader gate does not require a connected source.'
-Assert-True ($main.Contains(
-    'reader_restart_required || !reader_ready')) `
-    'Explicit reader-restart state does not gate game admission.'
+Assert-True ($main.Contains('int reader_healthy =') `
+    -and $main.Contains('reader_restart_required || !reader_healthy ||')) `
+    'Reader restart gate does not distinguish health from a connected pad.'
+Assert-True ($main.Contains('g_reader_foreground_user') `
+    -and $main.Contains('foreground_changed')) `
+    'Reader candidate list is not refreshed when the foreground user changes.'
+Assert-True ($main.Contains('controller appeared while waiting')) `
+    'Controller arrival while waiting does not refresh the source discovery.'
 Assert-True ($main.Contains(
     '"waiting_reader_stop"')) `
     'Failed reader stop is not retained for retry.'

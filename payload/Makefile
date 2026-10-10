@@ -1,10 +1,10 @@
 PS5_HOST ?=
 PORT     ?= 9021
+PWSH     ?= pwsh
 VERSION      := 1.0.0
 VERSION_CODE := 100
 
 TARGET        := PoorDS4-v$(VERSION).elf
-EXP_TARGET    := PoorDS4exp.elf
 STATUS_TARGET := PoorDS4-status.elf
 STOP_TARGET   := PoorDS4-stop.elf
 
@@ -28,7 +28,7 @@ BRIDGE_LIBS  := $(RUNTIME_LIBS) -lSceUserService -lSceNotification
 
 .PHONY: all audit clean deploy icon release status stop
 
-all: $(TARGET) $(EXP_TARGET)
+all: $(TARGET)
 
 $(TARGET): game_pad_bridge_main.c wireless_ds4.c wireless_ds4.h pad_types.h \
 	assets/poor_ds4_icon.h
@@ -36,9 +36,6 @@ $(TARGET): game_pad_bridge_main.c wireless_ds4.c wireless_ds4.h pad_types.h \
 		'-DPOORDS4_VERSION_STR="$(VERSION)"' \
 		-DPOORDS4_VERSION_CODE=$(VERSION_CODE) -o $@ \
 		game_pad_bridge_main.c wireless_ds4.c $(LDFLAGS) $(BRIDGE_LIBS)
-
-$(EXP_TARGET): $(TARGET)
-	cp -f $(TARGET) $(EXP_TARGET)
 
 status: $(STATUS_TARGET)
 
@@ -56,7 +53,12 @@ release: all status stop
 	$(STRIP) --strip-debug $(TARGET) $(STATUS_TARGET) $(STOP_TARGET)
 
 audit:
-	@echo "Static audit not available on this platform"
+	@if command -v $(PWSH) >/dev/null 2>&1; then \
+		$(PWSH) -NoProfile -File ../tests/static-audit.ps1; \
+	else \
+		echo "pwsh not found: skipping the static audit (set PWSH=...)"; \
+	fi
+	@python3 ../tests/validate_notify_json.py
 
 # Rebuild the embedded toast icon from tools/make_icon.py (both the PNG and the
 # generated C header are committed, so a plain build needs no Python).
@@ -65,7 +67,8 @@ icon:
 	python3 ../tools/make_icon.py --header
 
 clean:
-	rm -f PoorDS4-v*.elf PoorDS4rc*.elf $(STATUS_TARGET) $(STOP_TARGET)
+	rm -f PoorDS4-v*.elf PoorDS4rc*.elf PoorDS4exp.elf \
+		$(STATUS_TARGET) $(STOP_TARGET)
 
 deploy: $(TARGET)
 ifndef PS5_HOST
