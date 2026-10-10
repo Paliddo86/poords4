@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc68] - 2026-09-30
+
+### Changed
+
+- **Blocco 6 — Capacità utenti e verifica DualSense (Modifiche 10 + 11)**:
+  - Modifica 10: `POORDS4_MAX_USER_CANDIDATES` raised from `6u` to `8u`, so every logged-in user is enumerated even with more than four profiles and a DS4 bound beyond the fourth candidate is no longer missed.
+  - Modifica 11: documented and made observable that a native DualSense (054c:0ce6 / 054c:0df2) must never enter the reader — every identity path (`public_identity`, `api_identity`, `table_identity`) goes through `remote_pad_is_known_ds4()`. Added a `reader skip native DualSense user=... index=... handle=...` diagnostic so a wrongly-accepted DualSense is immediately visible in the log.
+
 ## [0.1.0-rc67] - 2026-09-30
 
 ### Fixed

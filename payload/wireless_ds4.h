@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-#define POORDS4_MAX_USER_CANDIDATES 6u
+#define POORDS4_MAX_USER_CANDIDATES 8u
 
 typedef struct {
     int32_t user_id;

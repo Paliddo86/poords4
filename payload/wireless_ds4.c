@@ -2969,6 +2969,19 @@ wireless_ds4_remote_reader_start(
                     klog_printf("%02x", device_info[byte]);
             }
             klog_printf("\n");
+            /* Modifica 11: a native DualSense (054c:0ce6 / 054c:0df2) must
+             * never enter the reader. Every identity path below goes through
+             * remote_pad_is_known_ds4(), which rejects it; log it explicitly
+             * so a wrongly-accepted DualSense is immediately visible. */
+            if (table_connected && table_vendor == UINT16_C(0x054c) &&
+                (table_product == UINT16_C(0x0ce6) ||
+                 table_product == UINT16_C(0x0df2))) {
+                klog_printf(
+                    "[PoorDS4] reader skip native DualSense "
+                    "user=0x%08x index=%d handle=0x%08x\n",
+                    (uint32_t)candidate_user, pad_index,
+                    (uint32_t)candidate_handle);
+            }
             /* Each real pad (a DS4 or a native DualSense) consumes one global
              * slot, so the reader slot index matches the game bridge slot
              * index (the game assigns one sequential index per pad). The
