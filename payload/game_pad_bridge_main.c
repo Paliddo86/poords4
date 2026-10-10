@@ -856,12 +856,12 @@ game_bridge_icon_probe(void)
         snprintf(message, sizeof(message),
                  "PoorDS4 icon test %u/%u: %s", index + 1u, total,
                  labels[index]);
-        if (!game_bridge_notify_full(message, "PoorDS4 icon test",
-                                     views[index], previews[index])) {
-            poords4_log(
-                "[PoorDS4] icon probe %u/%u rejected\n",
-                index + 1u, total);
-        }
+        int ok = game_bridge_notify_full(message, "PoorDS4 icon test",
+                                         views[index], previews[index]);
+        /* Always logged: this line is what tells us remotely which variant was
+         * sent and whether the service accepted it. */
+        poords4_log("[PoorDS4] icon probe %u/%u ok=%d %s\n",
+                    index + 1u, total, ok, labels[index]);
     }
 }
 
@@ -1763,6 +1763,7 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
         if (input_frames != 0 && (input_frames % 600u) == 0 &&
             input_frames != last_health_frame) {
             wireless_ds4_log_verbose_poll();
+            game_bridge_icon_probe_poll();
             PoorDS4RemoteReaderStatus reader_watch;
             memset(&reader_watch, 0, sizeof(reader_watch));
             if (reader_pid > 0 && reader_args != 0 &&
@@ -1908,7 +1909,12 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
             consecutive_write_failures >= 1200u ||
             consecutive_bridge_health_failures >= 5u ||
             !game_alive) {
-            wireless_ds4_log_enable_verbose("bridge health failures");
+            /* A game that simply exited is not a failure: keep the log quiet in
+             * that case and switch the detail on only for real trouble. */
+            if (consecutive_read_failures >= 240u ||
+                consecutive_write_failures >= 1200u ||
+                consecutive_bridge_health_failures >= 5u)
+                wireless_ds4_log_enable_verbose("bridge health failures");
             poords4_log(
                 "[PoorDS4] bridge stopping read_streak=%u "
                 "write_streak=%u bridge_health_streak=%u "
