@@ -31,8 +31,8 @@
 
 #include "wireless_ds4.h"
 
-#ifndef POORDS4_RC_VERSION
-#define POORDS4_RC_VERSION 0
+#ifndef POORDS4_VERSION_CODE
+#define POORDS4_VERSION_CODE 0
 #endif
 #include "pad_types.h"
 
@@ -2926,7 +2926,7 @@ wireless_ds4_remote_reader_start(
                 "mode=read-only-source-libpad-fingerprint\n"
                 "poords4_rc=%d\nreport_schema=8\n"
                 "firmware=0x%08x\npid=%d\nlibpad_base=0x%lx\n",
-                POORDS4_RC_VERSION, firmware, target,
+                POORDS4_VERSION_CODE, firmware, target,
                 (unsigned long)libpad_base);
 
         static const char *const source_symbol_names[
@@ -5641,7 +5641,7 @@ wireless_ds4_game_bridge_run_passive(
         "remote_game_calls=0\ngame_heap_allocations=0\n",
         firmware, target, (uint32_t)source->user_id,
         source->pad_index, (uint32_t)source->pad_handle,
-        (uint32_t)source->ds4_connected, POORDS4_RC_VERSION);
+        (uint32_t)source->ds4_connected, POORDS4_VERSION_CODE);
 
     uint32_t libpad_handle = 0;
     if (get_lib(target, "libScePad", &libpad_handle) != 0) {

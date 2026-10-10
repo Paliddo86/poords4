@@ -29,7 +29,7 @@ crash. Save your gamesave before testing (it broke the save file of a game durin
 
 1. **Bluetooth Pairing**: Put your DualShock 4 into pairing mode by holding `SHARE` + `PS Button` together until the lightbar starts double-blinking rapidly. On the PS5, go to `Settings > Accessories > Bluetooth Accessories` and select **DUALSHOCK 4**.
 2. **Controller Profile**: Connect the DS4 to whichever user profile should play (Player 1 or Player 2). If Player 1 is already using a native DualSense, connect the DS4 under Player 2's profile.
-3. **Deploy Payload**: Send `PoorDS4rc77.elf` to the console's ELF loader (port 9021). The game may already be running or launched afterward.
+3. **Deploy Payload**: Send `PoorDS4-v1.0.0.elf` to the console's ELF loader (port 9021). The game may already be running or launched afterward.
 4. **Play**: Wait for the `wireless DS4 active` notification, then play normally.
 
 Only run one automatic instance. PoorDS4 follows later game launches without reinjection. It performs safe cleanup before rest mode; reinject after waking. Use `PoorDS4-stop.elf` before replacing a running build.
@@ -140,7 +140,7 @@ rc64 used v0.42):
 
 | Output | Purpose |
 | --- | --- |
-| `PoorDS4rc77.elf` | Automatic wireless DS4 bridge |
+| `PoorDS4-v1.0.0.elf` | Automatic wireless DS4 bridge (release 1.0.0) |
 | `PoorDS4-status.elf` | Read-only bridge status snapshot |
 | `PoorDS4-stop.elf` | Cooperative stop request |
 
@@ -160,6 +160,21 @@ directory and include the steps that reproduced the failure. Source and game
 reports identify `poords4_rc` and `report_schema`. Review reports before posting
 them publicly because they contain runtime process addresses and controller
 diagnostics.
+
+Release builds keep the log quiet: they write errors and the essential
+lifecycle information (version, reader start/stop, game detected, install
+result, controller count changes, session end) and nothing else. Create
+`/data/poords4/verbose` to switch the detailed diagnostics on at runtime; the
+file is picked up within a few seconds and the payload also turns verbose mode
+on by itself as soon as something fails, so a session that breaks is captured
+automatically. `game-pad-bridge-last.txt` and `reports/` keep the full
+telemetry in every case.
+
+Notifications are native system toasts only. The icon comes from the payload
+itself: it is written to `/data/poords4/icon.png` on first use, and replacing
+that file changes the icon without rebuilding the payload. Creating
+`/data/poords4/icon-probe` sends one toast per icon variant (custom icon,
+`download`, `game`) so the rendering can be compared on the console.
 
 ## Multi-Controller Support (Experimental)
 

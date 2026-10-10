@@ -109,7 +109,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            payload/PoorDS4rc*.elf
+            payload/PoorDS4-v*.elf
             payload/PoorDS4exp.elf
             payload/PoorDS4-status.elf
             payload/PoorDS4-stop.elf

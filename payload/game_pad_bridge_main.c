@@ -51,8 +51,11 @@ extern int sceKernelGetAppInfo(pid_t pid, app_info_t *info);
 #ifndef POORDS4_AUTO_WATCH
 #define POORDS4_AUTO_WATCH 0
 #endif
-#ifndef POORDS4_RC_VERSION
-#define POORDS4_RC_VERSION 0
+#ifndef POORDS4_VERSION_STR
+#define POORDS4_VERSION_STR "0"
+#endif
+#ifndef POORDS4_VERSION_CODE
+#define POORDS4_VERSION_CODE 0
 #endif
 
 static time_t g_last_supervisor_write;
@@ -458,7 +461,7 @@ write_supervisor_state(const char *state, pid_t game_pid,
         "lifecycle_status_poll_result=0x%08x\n"
         "lifecycle_status_pattern=0x%016llx\n"
         "lifecycle_status_shutdown=%u\n",
-        getpid(), (long long)now, POORDS4_RC_VERSION,
+        getpid(), (long long)now, POORDS4_VERSION_CODE,
         POORDS4_AUTO_WATCH,
         state ? state : "unknown", game_pid, sessions, output_frames,
         g_reader_pid, (unsigned long)g_reader_args,
@@ -752,6 +755,11 @@ game_bridge_notify_text(const char *message, const char *sub_message)
 {
     if (game_bridge_notify_native_with_icon(
             message, sub_message, game_bridge_notify_icon()))
+        return;
+    /* The kernel notification is the debug-style popup: release builds keep
+     * only system toasts and leave the failure in the log. Verbose logging
+     * brings the fallback back for diagnosis. */
+    if (!wireless_ds4_log_verbose_enabled())
         return;
     game_bridge_notify_kernel(message);
 }
@@ -2145,14 +2153,14 @@ main(void)
     write_supervisor_state("starting", -1, 0, 0, 1);
     (void)sceUserServiceInitialize(NULL);
     poords4_log(
-        "[PoorDS4] game bridge start rc=%d auto_watch=%d\n",
-        POORDS4_RC_VERSION, POORDS4_AUTO_WATCH);
+        "[PoorDS4] game bridge start version=%s auto_watch=%d\n",
+        POORDS4_VERSION_STR, POORDS4_AUTO_WATCH);
     g_native_log_sink = wireless_ds4_native_log_resolve();
     {
         char message[128];
         snprintf(message, sizeof(message),
-                 "[PoorDS4] rc=%d native klog sink=%s\n",
-                 POORDS4_RC_VERSION,
+                 "[PoorDS4] version=%s native klog sink=%s\n",
+                 POORDS4_VERSION_STR,
                  g_native_log_sink ? "online" : "unavailable");
         native_log_line(message);
     }

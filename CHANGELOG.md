@@ -1,7 +1,38 @@
 # Changelog
 
 All notable changes to this project are documented here. Release tags follow
-Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
+Semantic Versioning; `1.0.0` is the first stable release, earlier wireless
+bridge candidates used `0.1.0-rcN`.
+
+## [1.0.0] - 2026-10-10
+
+First stable release. A DS4 paired to any logged-in profile is detected,
+bridged and kept in sync without pressing the reset combo; notifications are
+native system toasts with the PoorDS4 icon; and the log stays quiet unless
+something fails.
+
+### Changed
+
+- **System toasts only**: the kernel "debug" popup is now used only when
+  verbose logging is on, so nothing but the native toasts appears during play.
+- **Log volume**: from ~8200 lines per session to the essential lifecycle
+  information plus every error. Detailed diagnostics (per-call traces,
+  per-candidate pad probes, periodic health, hex dumps) require
+  `/data/poords4/verbose`, or are enabled automatically as soon as a session
+  fails. The per-session report keeps the full telemetry.
+- **Notifications**: the count toast reads `N controller active` with the
+  triggering event as the small line under it, and uses a custom PoorDS4 icon
+  written to `/data/poords4/icon.png` (replaceable without rebuilding;
+  `/data/poords4/icon-probe` compares icon variants on the console).
+- **Versioning**: artifacts are named `PoorDS4-v<version>.elf`, the startup
+  banner logs `version=1.0.0`, and the external report field stays
+  `poords4_rc` (numeric, `100` for 1.0.0).
+
+### Fixed
+
+- A DS4 on a second or third user profile is discovered automatically: the
+  in-target rescan binds the login user number before probing and the reader
+  refreshes its user lists once per game launch, so no manual reset is needed.
 
 ## [0.1.0-rc77] - 2026-09-30
 

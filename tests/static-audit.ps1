@@ -18,8 +18,12 @@ $makefile = [IO.File]::ReadAllText(
 $iconHeader = [IO.File]::ReadAllText(
     (Join-Path $repo 'payload/assets/poor_ds4_icon.h'))
 
-Assert-True ($makefile.Contains('RC_VERSION := 77')) `
-    'Makefile RC version is not 77.'
+Assert-True ($makefile.Contains('VERSION      := 1.0.0')) `
+    'Makefile release version is not 1.0.0.'
+Assert-True ($makefile.Contains('VERSION_CODE := 100')) `
+    'Makefile release version code is not 100.'
+Assert-True ($makefile.Contains('-DPOORDS4_VERSION_STR')) `
+    'Bridge build does not pass the release version string.'
 Assert-True (-not $makefile.Contains('-lScePad')) `
     'Build still links libScePad despite using runtime-resolved game exports.'
 Assert-True (-not $makefile.Contains('-lpthread')) `
@@ -37,7 +41,7 @@ Assert-True ($makefile.Contains(
     'Release target does not remove workstation paths from DWARF data.'
 Assert-True (-not $makefile.Contains('-lSceNet')) `
     'Build still links the SDK networking library without a network import.'
-Assert-True ($makefile.Contains('TARGET        := PoorDS4rc$(RC_VERSION).elf')) `
+Assert-True ($makefile.Contains('TARGET        := PoorDS4-v$(VERSION).elf')) `
     'Automatic payload does not use the PoorDS4 release name.'
 Assert-True ($makefile.Contains('STATUS_TARGET := PoorDS4-status.elf')) `
     'Status payload does not use the PoorDS4 release name.'
@@ -95,6 +99,11 @@ Assert-True ($main.Contains('subMessage\":{\"body\":\"%s')) `
     'Toast sub message is not dynamic.'
 Assert-True ($main.Contains('game_bridge_notify_text(')) `
     'Toast builder does not expose an explicit sub message.'
+Assert-True ($main.Contains('game bridge start version=%s')) `
+    'Startup banner does not log the release version.'
+Assert-True ($main.Contains('if (!wireless_ds4_log_verbose_enabled())') `
+    -and $main.Contains('game_bridge_notify_kernel(message);')) `
+    'Kernel debug popup is not gated behind verbose logging.'
 $python = Get-Command python3 -ErrorAction SilentlyContinue
 if ($python) {
     & $python.Source (Join-Path $repo 'tests/validate_notify_json.py') |

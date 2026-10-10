@@ -1,8 +1,9 @@
 PS5_HOST ?=
 PORT     ?= 9021
-RC_VERSION := 77
+VERSION      := 1.0.0
+VERSION_CODE := 100
 
-TARGET        := PoorDS4rc$(RC_VERSION).elf
+TARGET        := PoorDS4-v$(VERSION).elf
 EXP_TARGET    := PoorDS4exp.elf
 STATUS_TARGET := PoorDS4-status.elf
 STOP_TARGET   := PoorDS4-stop.elf
@@ -32,7 +33,8 @@ all: $(TARGET) $(EXP_TARGET)
 $(TARGET): game_pad_bridge_main.c wireless_ds4.c wireless_ds4.h pad_types.h \
 	assets/poor_ds4_icon.h
 	$(CC) $(CFLAGS) -DPOORDS4_AUTO_WATCH=1 \
-		-DPOORDS4_RC_VERSION=$(RC_VERSION) -o $@ \
+		'-DPOORDS4_VERSION_STR="$(VERSION)"' \
+		-DPOORDS4_VERSION_CODE=$(VERSION_CODE) -o $@ \
 		game_pad_bridge_main.c wireless_ds4.c $(LDFLAGS) $(BRIDGE_LIBS)
 
 $(EXP_TARGET): $(TARGET)
@@ -63,7 +65,7 @@ icon:
 	python3 ../tools/make_icon.py --header
 
 clean:
-	rm -f PoorDS4rc*.elf $(STATUS_TARGET) $(STOP_TARGET)
+	rm -f PoorDS4-v*.elf PoorDS4rc*.elf $(STATUS_TARGET) $(STOP_TARGET)
 
 deploy: $(TARGET)
 ifndef PS5_HOST
