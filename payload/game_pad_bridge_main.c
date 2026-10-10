@@ -2296,6 +2296,9 @@ main(void)
             launch_candidate_since_ms = 0;
             retry_pid = -1;
             install_retries = 0;
+            /* The restarted reader gets a fresh snapshot: no transition to
+             * compare against until it has been observed once. */
+            reader_connected_was = -1;
             game_bridge_notify(
                 "PoorDS4: wireless DS4 restored; waiting for a PS5 game");
             continue;
