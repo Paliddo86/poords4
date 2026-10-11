@@ -29,7 +29,7 @@ crash. Save your gamesave before testing (it broke the save file of a game durin
 
 1. **Bluetooth Pairing**: Put your DualShock 4 into pairing mode by holding `SHARE` + `PS Button` together until the lightbar starts double-blinking rapidly. On the PS5, go to `Settings > Accessories > Bluetooth Accessories` and select **DUALSHOCK 4**.
 2. **Controller Profile**: Connect the DS4 to whichever user profile should play (Player 1 or Player 2). If Player 1 is already using a native DualSense, connect the DS4 under Player 2's profile.
-3. **Deploy Payload**: Send `PoorDS4rc68.elf` to the console's ELF loader (port 9021). The game may already be running or launched afterward.
+3. **Deploy Payload**: Send `PoorDS4-v1.0.0.elf` to the console's ELF loader (port 9021). The game may already be running or launched afterward.
 4. **Play**: Wait for the `wireless DS4 active` notification, then play normally.
 
 Only run one automatic instance. PoorDS4 follows later game launches without reinjection. It performs safe cleanup before rest mode; reinject after waking. Use `PoorDS4-stop.elf` before replacing a running build.
@@ -90,6 +90,41 @@ make -C payload clean
 make -C payload release
 ```
 
+### Local build on macOS
+
+The SDK binary distribution is POSIX and CPU-architecture independent, so a
+local macOS build only needs the SDK plus LLVM 18 from Homebrew:
+
+```sh
+# LLVM 18 provides llvm-config and llvm-strip, used by prospero.mk
+brew install llvm@18 wget
+
+# PS5 payload SDK binary distribution
+curl -L -o /tmp/ps5-payload-sdk.zip \
+  https://github.com/ps5-payload-dev/sdk/releases/latest/download/ps5-payload-sdk.zip
+sudo unzip -q -d /opt /tmp/ps5-payload-sdk.zip
+
+# Environment (append to ~/.zshrc to persist)
+export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+export LLVM_CONFIG="$(brew --prefix llvm@18)/bin/llvm-config"
+export PATH="$PS5_PAYLOAD_SDK/bin:$(brew --prefix llvm@18)/bin:$PATH"
+
+# Build, audit, deploy
+make -C payload clean
+make -C payload release
+pwsh -File tests/static-audit.ps1
+make -C payload deploy PS5_HOST=<console-ip>
+```
+
+Notes for the local loop: `pwsh` comes from `brew install --cask powershell`;
+`make -C payload audit` is only a stub that prints a notice, so the audit must
+be run with `pwsh` directly; `make -C payload release` needs `llvm-strip` on
+`PATH`; `make -C payload deploy` streams the ELF to the console's loader with
+`nc` (override with `PORT=`). The `ps5-sdk` submodule is a source checkout
+rather than an installed SDK, so using it directly requires
+`make DESTDIR=... install` with clang-18/lld-18; the released zip is simply
+unpacked and used through `PS5_PAYLOAD_SDK`.
+
 On the Windows PS5 development workspace used for release builds, load the
 environment and select its target wrapper explicitly:
 
@@ -99,11 +134,13 @@ make -C payload CC=ps5-clang.cmd clean
 make -C payload CC=ps5-clang.cmd release audit
 ```
 
-RC68 release assets use ps5-payload-sdk v0.42:
+RC release assets are produced by the GitHub workflow with the latest
+ps5-payload-sdk release (v0.43 at the time of writing; earlier RCs such as
+rc64 used v0.42):
 
 | Output | Purpose |
 | --- | --- |
-| `PoorDS4rc68.elf` | Automatic wireless DS4 bridge |
+| `PoorDS4-v1.0.0.elf` | Automatic wireless DS4 bridge (release 1.0.0) |
 | `PoorDS4-status.elf` | Read-only bridge status snapshot |
 | `PoorDS4-stop.elf` | Cooperative stop request |
 
@@ -123,6 +160,22 @@ directory and include the steps that reproduced the failure. Source and game
 reports identify `poords4_rc` and `report_schema`. Review reports before posting
 them publicly because they contain runtime process addresses and controller
 diagnostics.
+
+Release builds keep the log quiet: they write errors and the essential
+lifecycle information (version, reader start/stop, game detected, install
+result, controller count changes, session end) and nothing else. Create
+`/data/poords4/verbose` to switch the detailed diagnostics on at runtime; the
+file is picked up within a few seconds and the payload also turns verbose mode
+on by itself as soon as something fails, so a session that breaks is captured
+automatically. `game-pad-bridge-last.txt` and `reports/` keep the full
+telemetry in every case.
+
+Notifications are the kernel "debug" popups
+(`sceKernelSendNotificationRequest`): a single line of text and no icon. The
+controller-count popup reads `PoorDS4: N controller active - <event>`, where
+`<event>` is what triggered it (wireless DS4 ready / active in the PS5 game /
+now bridged); every other popup is the same sentence the log carries
+(`PoorDS4: wireless DS4 bridge stopped`, ...).
 
 ## Multi-Controller Support (Experimental)
 

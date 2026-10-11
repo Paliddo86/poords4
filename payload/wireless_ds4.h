@@ -11,6 +11,8 @@ typedef struct {
     int32_t pad_index;
     int32_t pad_handle;
     int32_t ds4_connected;
+    /* Number of DS4 pads the reader detected and associated with a slot. */
+    int32_t ds4_count;
 } PoorDS4PadSource;
 
 int wireless_ds4_remote_reader_start(
@@ -30,6 +32,20 @@ int wireless_ds4_remote_reader_stop(pid_t pid, intptr_t args_address);
 /* Selects the currently active (foreground) user whose DS4 should become the
  * primary bridged controller. Pass -1 when there is no active user. */
 void wireless_ds4_set_foreground_user(int32_t user_id);
+
+/* Resolves the kernel's native log sink (sceKernelDebugOutText) inside the
+ * calling process, or 0 when this firmware does not export it. Resolved at
+ * runtime so no symbol is imported at load time. */
+intptr_t wireless_ds4_native_log_resolve(void);
+
+/* Runtime log verbosity. Release builds write only errors and the essential
+ * lifecycle information; the detailed diagnostics are written only when the
+ * user creates /data/poords4/verbose, or automatically after a failure so that
+ * the log already carries the context needed to diagnose it. */
+int wireless_ds4_log_verbose_enabled(void);
+void wireless_ds4_log_set_verbose(int enabled);
+void wireless_ds4_log_enable_verbose(const char *reason);
+void wireless_ds4_log_verbose_poll(void);
 
 typedef struct {
     int32_t ready;
@@ -61,6 +77,9 @@ typedef struct {
     uint64_t timestamp;
     uint32_t reset_combo_ticks;
     uint32_t reset_requested;
+    /* Consecutive rescans that saw a connected DS4 the reader cannot read. The
+     * supervisor rebuilds the reader when this reaches 2. */
+    uint32_t rescan_stuck;
 } PoorDS4RemoteReaderStatus;
 
 int wireless_ds4_remote_reader_status(

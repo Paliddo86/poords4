@@ -10,14 +10,18 @@ function Assert-True {
 }
 
 $main = [IO.File]::ReadAllText(
-    (Join-Path $repo 'payload\game_pad_bridge_main.c'))
+    (Join-Path $repo 'payload/game_pad_bridge_main.c'))
 $bridge = [IO.File]::ReadAllText(
-    (Join-Path $repo 'payload\wireless_ds4.c'))
+    (Join-Path $repo 'payload/wireless_ds4.c'))
 $makefile = [IO.File]::ReadAllText(
-    (Join-Path $repo 'payload\Makefile'))
+    (Join-Path $repo 'payload/Makefile'))
 
-Assert-True ($makefile.Contains('RC_VERSION := 68')) `
-    'Makefile RC version is not 68.'
+Assert-True ($makefile.Contains('VERSION      := 1.0.0')) `
+    'Makefile release version is not 1.0.0.'
+Assert-True ($makefile.Contains('VERSION_CODE := 100')) `
+    'Makefile release version code is not 100.'
+Assert-True ($makefile.Contains('-DPOORDS4_VERSION_STR')) `
+    'Bridge build does not pass the release version string.'
 Assert-True (-not $makefile.Contains('-lScePad')) `
     'Build still links libScePad despite using runtime-resolved game exports.'
 Assert-True (-not $makefile.Contains('-lpthread')) `
@@ -35,7 +39,11 @@ Assert-True ($makefile.Contains(
     'Release target does not remove workstation paths from DWARF data.'
 Assert-True (-not $makefile.Contains('-lSceNet')) `
     'Build still links the SDK networking library without a network import.'
-Assert-True ($makefile.Contains('TARGET        := PoorDS4rc$(RC_VERSION).elf')) `
+Assert-True (-not $makefile.Contains('EXP_TARGET')) `
+    'Build still produces the retired experimental artifact.'
+Assert-True ($makefile.Contains('tests/static-audit.ps1')) `
+    'The audit target does not run the static audit.'
+Assert-True ($makefile.Contains('TARGET        := PoorDS4-v$(VERSION).elf')) `
     'Automatic payload does not use the PoorDS4 release name.'
 Assert-True ($makefile.Contains('STATUS_TARGET := PoorDS4-status.elf')) `
     'Status payload does not use the PoorDS4 release name.'
@@ -43,6 +51,45 @@ Assert-True ($makefile.Contains('STOP_TARGET   := PoorDS4-stop.elf')) `
     'Stop payload does not use the PoorDS4 release name.'
 Assert-True ($main.Contains('#define POORDS4_DATA_DIR   "/data/poords4"')) `
     'Runtime data directory does not use the PoorDS4 name.'
+Assert-True ($bridge.Contains(
+    'define POORDS4_VERBOSE_FILE    POORDS4_DATA_DIR "/verbose"')) `
+    'Verbose log switch file is not wired to the runtime data directory.'
+Assert-True ($bridge.Contains('wireless_ds4_log_verbose_enabled(void)') `
+    -and $bridge.Contains('wireless_ds4_log_enable_verbose(const char *reason)') `
+    -and $bridge.Contains('wireless_ds4_log_verbose_poll(void)')) `
+    'Runtime log verbosity helpers are missing.'
+Assert-True ($main.Contains('#define POORDS4_LOG_DEBUG(...)')) `
+    'Bridge is missing the verbose-only log macro.'
+Assert-True ($bridge.Contains('POORDS4_LOG_DEBUG("[WirelessDS4] pt_call: fn=')) `
+    'Per-call ptrace tracing is not gated behind verbose logging.'
+Assert-True (-not $bridge.Contains('klog_printf("[PoorDS4] source candidate user=') `
+    -and -not $bridge.Contains('klog_printf("[PoorDS4] pad alt-index user=') `
+    -and -not $bridge.Contains('klog_printf("[PoorDS4] pad alt-type user=') `
+    -and -not $bridge.Contains('klog_printf("[PoorDS4] pad controller-info user=') `
+    -and -not $bridge.Contains('klog_printf("[PoorDS4] pad is-ds4-connected by_user=')) `
+    'Per-candidate pad diagnostics are not gated behind verbose logging.'
+Assert-True ($main.Contains("wireless_ds4_log_enable_verbose(`"reader start failed`");")) `
+    'Failures do not switch the detailed log on for post-mortem analysis.'
+$hexGuards = ([regex]::Matches($bridge,
+    [regex]::Escape('if (wireless_ds4_log_verbose_enabled()) {'))).Count
+Assert-True ($hexGuards -ge 3) `
+    'Hex dumps still run without verbose logging.'
+$verbosePolls = ([regex]::Matches($main,
+    [regex]::Escape('wireless_ds4_log_verbose_poll();'))).Count
+Assert-True ($verbosePolls -ge 3) `
+    'Verbose log switch is not polled from the supervisor loops.'
+
+Assert-True ($main.Contains('game_bridge_notify(const char *message)') `
+    -and $main.Contains('sceKernelSendNotificationRequest(')) `
+    'The debug notification popup is not sent through the kernel request.'
+Assert-True ($main.Contains('"PoorDS4: %d controller active - %s%s"')) `
+    'Controller count notification does not carry count and event on one line.'
+Assert-True (-not $main.Contains('sceNotificationSend') `
+    -and -not $main.Contains('POORDS4_NOTIFY_TEMPLATE') `
+    -and -not $main.Contains('game_bridge_icon')) `
+    'Native system toast or toast-icon code is still present.'
+Assert-True ($main.Contains('game bridge start version=%s')) `
+    'Startup banner does not log the release version.'
 Assert-True ($main.Contains('install_result == 0 ? 5u : 15u')) `
     'Bounded retry for a transient fail-closed game snapshot is missing.'
 Assert-True ($main.Contains(
@@ -54,9 +101,14 @@ Assert-True ($main.Contains(
 Assert-True ($main.Contains(
     'reader_preflight.connected != 0')) `
     'Pre-game reader gate does not require a connected source.'
-Assert-True ($main.Contains(
-    'reader_restart_required || !reader_ready')) `
-    'Explicit reader-restart state does not gate game admission.'
+Assert-True ($main.Contains('int reader_healthy =') `
+    -and $main.Contains('reader_restart_required || !reader_healthy ||')) `
+    'Reader restart gate does not distinguish health from a connected pad.'
+Assert-True ($main.Contains('g_reader_foreground_user') `
+    -and $main.Contains('foreground_changed')) `
+    'Reader candidate list is not refreshed when the foreground user changes.'
+Assert-True ($main.Contains('controller appeared while waiting')) `
+    'Controller arrival while waiting does not refresh the source discovery.'
 Assert-True ($main.Contains(
     '"waiting_reader_stop"')) `
     'Failed reader stop is not retained for retry.'
@@ -70,7 +122,7 @@ Assert-True ($main.Contains(
     'game_session_end_reason_name(end_reason)')) `
     'Session diagnostics do not include a named termination reason.'
 Assert-True ($main.Contains(
-    'g_pad_source = (PoorDS4PadSource){-1, -1, -1, 0};')) `
+    'g_pad_source = (PoorDS4PadSource){-1, -1, -1, 0, 0};')) `
     'Reader-loss gate does not invalidate the stale source identity.'
 
 $readerGate = $main.IndexOf(
@@ -172,7 +224,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 $expectedTracked = @(
     '.gitattributes',
+    '.github/workflows/build-and-release.yml',
     '.gitignore',
+    '.gitmodules',
     'CHANGELOG.md',
     'LICENSE',
     'NOTICE.md',

@@ -1,9 +1,10 @@
 PS5_HOST ?=
 PORT     ?= 9021
-RC_VERSION := 68
+PWSH     ?= pwsh
+VERSION      := 1.0.0
+VERSION_CODE := 100
 
-TARGET        := PoorDS4rc$(RC_VERSION).elf
-EXP_TARGET    := PoorDS4exp.elf
+TARGET        := PoorDS4-v$(VERSION).elf
 STATUS_TARGET := PoorDS4-status.elf
 STOP_TARGET   := PoorDS4-stop.elf
 
@@ -27,15 +28,13 @@ BRIDGE_LIBS  := $(RUNTIME_LIBS) -lSceUserService
 
 .PHONY: all audit clean deploy release status stop
 
-all: $(TARGET) $(EXP_TARGET)
+all: $(TARGET)
 
 $(TARGET): game_pad_bridge_main.c wireless_ds4.c wireless_ds4.h pad_types.h
 	$(CC) $(CFLAGS) -DPOORDS4_AUTO_WATCH=1 \
-		-DPOORDS4_RC_VERSION=$(RC_VERSION) -o $@ \
+		'-DPOORDS4_VERSION_STR="$(VERSION)"' \
+		-DPOORDS4_VERSION_CODE=$(VERSION_CODE) -o $@ \
 		game_pad_bridge_main.c wireless_ds4.c $(LDFLAGS) $(BRIDGE_LIBS)
-
-$(EXP_TARGET): $(TARGET)
-	cp -f $(TARGET) $(EXP_TARGET)
 
 status: $(STATUS_TARGET)
 
@@ -53,10 +52,15 @@ release: all status stop
 	$(STRIP) --strip-debug $(TARGET) $(STATUS_TARGET) $(STOP_TARGET)
 
 audit:
-	@echo "Static audit not available on this platform"
+	@if command -v $(PWSH) >/dev/null 2>&1; then \
+		$(PWSH) -NoProfile -File ../tests/static-audit.ps1; \
+	else \
+		echo "pwsh not found: skipping the static audit (set PWSH=...)"; \
+	fi
 
 clean:
-	rm -f PoorDS4rc*.elf $(STATUS_TARGET) $(STOP_TARGET)
+	rm -f PoorDS4-v*.elf PoorDS4rc*.elf PoorDS4exp.elf \
+		$(STATUS_TARGET) $(STOP_TARGET)
 
 deploy: $(TARGET)
 ifndef PS5_HOST

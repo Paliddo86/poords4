@@ -84,3 +84,24 @@ all gateways resolve to one valid bridge ABI v1 argument block with matching own
 The product contains no game-ptrace fallback. Unknown layouts are abandoned
 rather than attached to, because live testing proved that even a brief
 write-free game attach can poison some titles' startup state.
+
+## Logging, notifications and diagnostics
+
+Release builds write only errors and the essential lifecycle information to
+`/data/poords4/game-pad-bridge.log`; the diagnostics in between (one line per
+game-side remote call, per-candidate pad probes, periodic health, hex dumps)
+are wrapped in `POORDS4_LOG_DEBUG()` and emitted only when verbose logging is
+on. Verbose logging is enabled at runtime by creating
+`/data/poords4/verbose` (polled every 5 s from the supervisor loops) or
+automatically by `wireless_ds4_log_enable_verbose()` as soon as a session
+fails, so a failing run captures its own context. The per-session report under
+`reports/` always keeps the full telemetry.
+
+Notifications are the kernel "debug" popups sent through
+`sceKernelSendNotificationRequest` (libkernel): a single line of text and no
+icon. The controller-count popup reads `PoorDS4: N controller active - <event>`,
+where `<event>` is the event that changed the count (wireless DS4 ready / active
+in the PS5 game / now bridged); every other popup reuses the log sentence
+verbatim. Both the notification and the line the bridge writes to its own log
+are emitted from `game_bridge_notify()` and `notify_with_ds4_count()`.
+

@@ -1,7 +1,270 @@
 # Changelog
 
 All notable changes to this project are documented here. Release tags follow
-Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
+Semantic Versioning; `1.0.0` is the first stable release, earlier wireless
+bridge candidates used `0.1.0-rcN`.
+
+## [1.0.0] - 2026-10-10
+
+First stable release. A DS4 paired to any logged-in profile is detected,
+bridged and kept in sync without pressing the reset combo; notifications are the
+kernel "debug" popups (`sceKernelSendNotificationRequest`); and the log stays
+quiet unless something fails.
+
+### Changed
+
+- **Debug notifications**: the console popup is back to the kernel notification
+  (`sceKernelSendNotificationRequest`), one line of text and no icon, instead of
+  the native system toast (`sceNotificationSend`) that did not render reliably.
+  The controller-count popup reads `PoorDS4: N controller active - <event>`,
+  where `<event>` is what triggered it (wireless DS4 ready / active in the PS5
+  game / now bridged); every other popup reuses the log sentence verbatim.
+- **Log volume**: from ~8200 lines per session to the essential lifecycle
+  information plus every error. Detailed diagnostics (per-call traces,
+  per-candidate pad probes, periodic health, hex dumps) require
+  `/data/poords4/verbose`, or are enabled automatically as soon as a session
+  fails. The per-session report keeps the full telemetry.
+- **Versioning**: artifacts are named `PoorDS4-v<version>.elf`, the startup
+  banner logs `version=1.0.0`, and the external report field stays
+  `poords4_rc` (numeric, `100` for 1.0.0).
+
+### Fixed
+
+- A DS4 on a second or third user profile is discovered automatically: the
+  in-target rescan binds the login user number before probing and the reader
+  refreshes its user lists once per game launch, so no manual reset is needed.
+- A controller that appears while a game runs no longer needs the reset combo:
+  the reader reports a connected-but-unreadable DS4 and the supervisor rebuilds
+  the reader automatically (three attempts per episode).
+
+## [0.1.0-rc77] - 2026-09-30
+
+### Changed
+
+- **Removed the per-frame counter read from the supervisor**: the rc76
+  diagnostic copied the whole 1920-byte reader argument block on every fed
+  frame (~2 KB at 60-125 Hz, plus the kernel auth-id switch that
+  `remote_reader_copyout()` performs) only to log rescan counters that no
+  decision depends on. Nothing in the supervisor needs those values: the rescan
+  runs and decides entirely inside RemotePlay.
+  - The functional evidence stays in the log as
+    `automatic discovery: fed mask=0x... now slot mask=0x...` plus the native
+    toast whenever a controller joins or leaves.
+  - `wireless_ds4_remote_reader_rescan_state()` was removed again (header and
+    implementation); the counters remain in the target arguments, written by
+    the reader thread, so an on-demand status report can surface them later
+    without any per-frame cost.
+
+## [0.1.0-rc76] - 2026-09-30
+
+### Fixed
+
+- **The automatic rescan never bound the login user number**, which is why the
+  rc74/75 field tests still needed the reset shortcut: the host discovery calls
+  `scePadSetLoginUserNumber()` before probing each user, the reader-thread
+  rescan did not, so the pads it opened reported no device. It now performs the
+  same bind (the number is already stored per candidate), so a controller
+  connected or assigned to a known user is picked up within ~3 s.
+- **The user set is refreshed when a game starts**: at the moment a new game pid
+  passes the module check (before the install, during the launch grace) the
+  supervisor sets `reader_restart_required` once per game, so the discovery runs
+  with the complete login **and** registered user lists. Controllers assigned
+  after PoorDS4 started are then part of the first session discovery, without
+  pressing L1+R1+L2+R2.
+- **Rescan diagnostics**: `automatic discovery scan count=N found=N
+  last_user=0x...` is logged whenever the counters change, so the next test log
+  shows whether the rescan runs and what it finds. `found` also reports the
+  number of pads that the rescan placed.
+
+### Note
+
+- This firmware exposes no "controller associated with a user" event (and no
+  `scePadGetUsersWithPads`): the equivalent is polling (rescan every ~3 s) plus
+  the user-list refresh at game start described above.
+
+## [0.1.0-rc75] - 2026-09-30
+
+### Changed
+
+- **Notifications are now native system toasts**: `game_bridge_notify()` first
+  sends the message through `sceNotificationSend()` (libSceNotification), i.e.
+  the same interactive toast template the console uses for its own messages
+  (icon, title, body), and only falls back to the plain
+  `sceKernelSendNotificationRequest()` "debug" popup when the native call is
+  rejected, logging the result of both paths.
+  - The JSON body is built from the template of the SDK sample
+    (`InteractiveToastTemplateB`, channel `Downloads`, `priority` 100) with the
+    message in `viewData.message.body` and in the non-interactive
+    `platformViews.previewDisabled` view, `PoorDS4` as sub message, and a unique
+    `localNotificationId` per toast. Characters that would break the JSON
+    (`"`, `\`, control bytes) are replaced in the body.
+  - Verified by parsing the template extracted from the built ELF with a JSON
+    parser (13/13 braces, top-level keys `rawData`/`createdDateTime`/
+    `localNotificationId`); a missing brace was caught and fixed this way.
+  - `BRIDGE_LIBS` gained `-lSceNotification`, so the loader makes the module
+    available (`NEEDED libSceNotification.sprx`). This is the only new load
+    time dependency; the `status` and `stop` payloads keep the minimal
+    `RUNTIME_LIBS` set, so removing `-lSceNotification` from `BRIDGE_LIBS` in
+    `payload/Makefile` is a one-line revert if a firmware rejects it.
+- The debug log is unchanged; the rc74 native klog mirror of the counter lines
+  is kept (additive, easy to drop).
+
+## [0.1.0-rc74] - 2026-09-30
+
+### Added
+
+- **Counter lines in the console's native log (klog)**: the native sink
+  (`sceKernelDebugOutText`, the same one the SDK's `klog_printf` writes to) was
+  never used because the payload redirects `klog_printf` to its own debug file.
+  It is now resolved at runtime inside the payload's own process
+  (`wireless_ds4_native_log_resolve()`), so **nothing is imported at load
+  time** (verified: the symbol is absent from the ELF dynamic symbol table) and
+  a firmware without the export simply logs `native klog sink=unavailable`.
+  `announce_ds4_count()` writes every count to both the console notification
+  and the native log:
+  - `[PoorDS4] rc=74 native klog sink=online` at startup,
+  - `[PoorDS4] wireless DS4 ready: N DS4 detected and associated`,
+  - `[PoorDS4] wireless DS4 active in the PS5 game: N DS4 detected and associated`,
+  - `[PoorDS4] wireless DS4 now bridged: N DS4 detected and associated` whenever
+    a controller is added or removed while a game is running.
+- **Automatic pad discovery (no more reset shortcut needed)**: the reader
+  thread, which already runs inside RemotePlay, now re-probes the candidate
+  users every ~3 s (`POORDS4_READER_RESCAN_LOOPS`) and places a connected DS4
+  that has no slot yet into a free one. The host writer already iterates all
+  four slots every frame, so the new controller starts being fed immediately
+  and logs `automatic discovery: slot mask=0x... now feeding the game`.
+  - Runs entirely inside the target thread: a few fast libScePad calls, no
+    ptrace stop, no reader restart, no interruption of the bridged pads.
+  - Only `054c:05c4` and `054c:09cc` revision DS4 are accepted, so a native
+    DualSense can never take a slot.
+  - `RemotePadReaderArgs` grew (1464 -> 1920 bytes, `_Static_assert` updated)
+    with the rescan function pointers, candidate user/number tables, per-slot
+    user ids and the rescan counters. `remote_pad_reader_rescan()` sits between
+    `remote_pad_reader_stub` and `remote_pad_reader_stub_end`, i.e. inside the
+    range copied into the target (verified with `llvm-nm`: 0x5e80 .. 0x62c0 ..
+    0x6550).
+  - Reader exit now always releases slots 1..3 (they can be opened by the
+    rescan too), while slot 0 stays conditional on `close_pad_on_exit`.
+
+### Changed
+
+- **Toasts report the DS4 count** instead of a single user name (rc73 work):
+  `PoorDS4: wireless DS4 ready (2 DS4 detected and associated); waiting for a
+  PS5 game`. The "bridge injected" toast stays generic because discovery has
+  not run yet.
+- User ids merged from RemotePlay's registered-user list now receive their list
+  position as the login user number (previously -1, i.e. no bind), so a DS4 on
+  a profile that is registered but not logged in is probed with the same
+  binding as the other users.
+
+## [0.1.0-rc73] - 2026-09-30
+
+### Fixed
+
+- **Toasts report the DS4 count instead of a single user name**: with several
+  DS4 every notification showed only the user of the last detected DS4, which
+  was misleading. The reader now publishes `PoorDS4PadSource::ds4_count` (pads
+  detected *and* associated with a slot) and the toasts read
+  `PoorDS4: <message> (N DS4 detected and associated)`. The "bridge injected"
+  toast stays generic because discovery has not run yet.
+- **Login user number for users outside the payload login list**: user ids
+  merged from RemotePlay's registered-user list now receive their list position
+  as the login user number (previously -1, i.e. no bind), so a DS4 on a profile
+  that is registered but not logged in (for example `0x…486`) is probed with
+  the same binding as the other users.
+
+### Verified in the field (rc72 logs)
+
+- After the controller reset shortcut, discovery found **2 DS4** (`matches=2`)
+  in slots 1 and 2 (`0x…485`, `0x…484`) and both worked in game. The reset
+  re-runs discovery, which the reader otherwise never does while its source is
+  alive: connect and assign every controller before starting the game, or use
+  the reset shortcut afterwards.
+- `scePadGetInfo` returns one record per open pad (handle plus a state word),
+  confirming libScePad saw both DS4.
+- RemotePlay's registered list exposed a **fourth** user id (`0x…486`) that the
+  payload login list does not contain; it is now probed as well.
+- The `pad alt-index` and `pad alt-type` probes found no hidden pad: the second
+  DS4 simply was not connected/assigned during the earlier cycles.
+
+## [0.1.0-rc72] - 2026-09-30
+
+### Fixed
+
+- **User list now comes from the user service of the attached process**:
+  - The rc71 client-table enumeration was confirmed useless: the table only
+    lists pads *that process* has already opened, so `pad table users n=0`
+    appeared in every discovery cycle. It has been removed.
+  - The reader now resolves `sceUserServiceGetLoginUserIdList` and
+    `sceUserServiceGetRegisteredUserIdList` **inside RemotePlay** (dynamic
+    resolution, nothing linked) and merges those ids after the supervisor
+    candidates, so the pad ordinals of the already known users do not move.
+  - `scePadGetUsersWithPads` does not exist on this firmware: the libScePad
+    export table has no such symbol and the rc71 runtime probe resolved it to
+    0. It was replaced by real diagnostics.
+
+### Added
+
+- **Diagnostics for the "second DS4 is not bridged" case**:
+  - `pad is-ds4-connected by_user=0x...` per candidate user, using
+    `scePadIsDS4Connected()` with the user id (the handle-based result is
+    already logged).
+  - `pad get-info result=0x... copy=... data=<32 bytes>` from
+    `scePadGetInfo()`, so the pad count libScePad itself reports is visible.
+    The second argument also points at the scratch buffer, so a variant that
+    expects an out parameter cannot dereference a null pointer.
+  - `pad controller-info user=0x... call=0x... copy=... data=<32 bytes>` for
+    every candidate handle, i.e. libScePad's own connection/class fields
+    (`scePadGetControllerInformation`, ABI already verified on this firmware).
+  - `pad alt-type user=0x... type=1..3 handle=... device=...` when the default
+    pad type reports no device, so a pad served behind a different type is
+    found instead of silently skipped.
+  - `remote user login/registered call=... ids=...` for the user lists read in
+    the attached process.
+
+### Analysis of the rc71 test logs
+
+- All three logged-in users (`0x…483`/`0x…485`/`0x…484`) were probed, and the
+  `reader bind` calls succeeded with `result=0x0`.
+- libScePad exposed exactly one DualSense (`054c:0ce6`, user `0x…483`) and one
+  DS4 (`054c:0x05c4`, user `0x…484`) in all 277 discovery cycles. User
+  `0x…485`'s pad always opened (`opened=1`) but never reported a device
+  (`state_connected=0`, `device_id=0xffffffff`), and `scePadGetHandle` always
+  returned `0x80920008`.
+- Opening index 1..7 of a user always returns `0x809b0003`: libScePad serves
+  one pad per user, so the second DS4 must be *assigned* to its own user for
+  PoorDS4 (or any other process) to see it.
+
+## [0.1.0-rc71] - 2026-09-30
+
+### Fixed
+
+- **User list read from libScePad's own client table**:
+  - Replaced the rc70 "adjacent user id window" heuristic (`collect_user_candidates`).
+  - Added `remote_pad_table_users()` in `wireless_ds4.c`: it enumerates the distinct user ids in libScePad's **client table** of the process PoorDS4 is attached to (handle at `+0x1c`, user id at `+0x24`, stride/table offsets already used by `remote_pad_identity`). libScePad populates that table for every assigned pad, so it lists the users that actually own a controller — the same 3 users the game's own table shows.
+  - `wireless_ds4_remote_reader_start` merges those ids with the supervisor's list and probes all of them, so the reader is initialised with the real user set on its first start (`pad table users n=...` in the log).
+  - The reader symbol log now also reports `userswithpads=0x...`: `scePadGetUsersWithPads` is only **resolved, never called** (zero risk), to verify on real firmware whether an official accessor exists.
+
+## [0.1.0-rc70] - 2026-09-30
+
+### Fixed
+
+- **Complete user list at reader start (no reader restart)**:
+  - Reverted the rc69 "stop and restart the reader when the game starts" behaviour.
+  - Root cause from the rc68 logs: `sceUserServiceGetLoginUserIdList` reports only one entry in the payload process, so `collect_user_candidates` handed the reader a single user (`reader start: ... users=1`) and controllers bound to another profile were never probed. The DS4 binding itself worked (`reader bind ... result=0x0`).
+  - `collect_user_candidates` now also probes a bounded window of **adjacent user ids** around the foreground user (PS5 user ids are allocated sequentially, e.g. `0x...483/484/485`), so the reader is initialised with the correct candidate list on its **first** start — no restart needed.
+  - Added a `user-service fg=... initial=... login=...` diagnostic line so the payload's raw view of the user service is visible.
+
+## [0.1.0-rc69] - 2026-09-30
+
+### Fixed / Added
+
+- **Reader refresh at game start (multi-user discovery)**:
+  - `run_game_session` now **stops and restarts the reader once the game is up** so the DS4 discovery runs again with a freshly collected user list. This addresses the root cause observed in the rc68 logs: `sceUserServiceGetLoginUserIdList` returns only one entry in the payload process, so the reader (`reader start: ... users=1`) probed just the foreground user and never instantiated the DS4 bound to another profile.
+  - Logs `game-start reader refresh source user=... index=... handle=...` and, on each discovery, `user candidates n=... 0x... 0x...` so the visible user list is immediately verifiable.
+
+- **User name in the activation toasts**:
+  - Added `sceUserServiceGetUserName` and `notify_with_user()`; the "bridge injected / starting reader", "wireless DS4 ready" and "wireless DS4 active in the PS5 game" notifications now show the display name of the user owning the DS4 that activated PoorDS4 (e.g. `PoorDS4: wireless DS4 ready (user Mario); waiting for a PS5 game`).
 
 ## [0.1.0-rc68] - 2026-09-30
 
