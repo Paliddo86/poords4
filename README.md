@@ -170,15 +170,12 @@ on by itself as soon as something fails, so a session that breaks is captured
 automatically. `game-pad-bridge-last.txt` and `reports/` keep the full
 telemetry in every case.
 
-Notifications are native system toasts only. The toast icon is the embedded
-PoorDS4 icon: it is published to `/user/data/poords4/icon.png`, the only area
-the notification overlay can read images from. Drop a replacement at
-`/data/poords4/icon.png` to change the icon without rebuilding the payload: the
-file is copied to the overlay path on the next start. If the icon cannot be
-published, the toast falls back to a predefined system icon. Creating
-`/data/poords4/icon-probe` sends one toast per icon variant (both icon
-locations, a `file://` form, a `/tmp` copy and six predefined names) and logs
-the result of each, so the rendering can be compared on the console.
+Notifications are the kernel "debug" popups
+(`sceKernelSendNotificationRequest`): a single line of text and no icon. The
+controller-count popup reads `PoorDS4: N controller active - <event>`, where
+`<event>` is what triggered it (wireless DS4 ready / active in the PS5 game /
+now bridged); every other popup is the same sentence the log carries
+(`PoorDS4: wireless DS4 bridge stopped`, ...).
 
 ## Multi-Controller Support (Experimental)
 

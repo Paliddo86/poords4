@@ -24,14 +24,13 @@ CFLAGS  += -D__PROSPERO__ -Wall -Wextra -Wshadow -Wunreachable-code \
 	-fdebug-compilation-dir=.
 LDFLAGS      += -Wl,--gc-sections,--build-id=sha1
 RUNTIME_LIBS := -nodefaultlibs -lc -lkernel_web -lSceLibcInternal
-BRIDGE_LIBS  := $(RUNTIME_LIBS) -lSceUserService -lSceNotification
+BRIDGE_LIBS  := $(RUNTIME_LIBS) -lSceUserService
 
-.PHONY: all audit clean deploy icon release status stop
+.PHONY: all audit clean deploy release status stop
 
 all: $(TARGET)
 
-$(TARGET): game_pad_bridge_main.c wireless_ds4.c wireless_ds4.h pad_types.h \
-	assets/poor_ds4_icon.h
+$(TARGET): game_pad_bridge_main.c wireless_ds4.c wireless_ds4.h pad_types.h
 	$(CC) $(CFLAGS) -DPOORDS4_AUTO_WATCH=1 \
 		'-DPOORDS4_VERSION_STR="$(VERSION)"' \
 		-DPOORDS4_VERSION_CODE=$(VERSION_CODE) -o $@ \
@@ -58,13 +57,6 @@ audit:
 	else \
 		echo "pwsh not found: skipping the static audit (set PWSH=...)"; \
 	fi
-	@python3 ../tests/validate_notify_json.py
-
-# Rebuild the embedded toast icon from tools/make_icon.py (both the PNG and the
-# generated C header are committed, so a plain build needs no Python).
-icon:
-	python3 ../tools/make_icon.py
-	python3 ../tools/make_icon.py --header
 
 clean:
 	rm -f PoorDS4-v*.elf PoorDS4rc*.elf PoorDS4exp.elf \

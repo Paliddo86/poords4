@@ -21,7 +21,6 @@
 
 #include "pad_types.h"
 #include "wireless_ds4.h"
-#include "assets/poor_ds4_icon.h"
 
 typedef struct app_info {
     uint32_t app_id;
@@ -38,13 +37,6 @@ extern int sceKernelGetAppInfo(pid_t pid, app_info_t *info);
 #define GAME_BRIDGE_LOG_BACKUP POORDS4_DATA_DIR "/game-pad-bridge.log.1"
 #define GAME_BRIDGE_LOCK_FILE  POORDS4_DATA_DIR "/game-pad-bridge-supervisor.lock"
 #define GAME_BRIDGE_STATE_FILE POORDS4_DATA_DIR "/game-pad-bridge-supervisor.txt"
-#define GAME_BRIDGE_ICON_FILE  POORDS4_DATA_DIR "/icon.png"
-/* The notification overlay can only read images from the user data area: a Url
- * icon pointing at /data renders nothing (field evidence). This is also where
- * ShadowMountPlus keeps its toast icon (/user/data/shadowmount/smp_icon.png). */
-#define POORDS4_ICON_DIR       "/user/data/poords4"
-#define POORDS4_ICON_FILE      POORDS4_ICON_DIR "/icon.png"
-#define GAME_BRIDGE_ICON_PROBE_FILE POORDS4_DATA_DIR "/icon-probe"
 #define GAME_BRIDGE_LAUNCH_GRACE_MS UINT64_C(1500)
 #define SOURCE_DISCONNECT_GRACE_MS  UINT64_C(1500)
 #define SOURCE_REDISCOVERY_MS       UINT64_C(2500)
@@ -547,8 +539,6 @@ extern int32_t sceUserServiceGetUserName(
     int32_t user_id, char *user_name, size_t size);
 extern int32_t sceKernelSendNotificationRequest(
     int unk0, void *request, size_t size, int unk1);
-extern int sceNotificationSend(int user_id, int is_logged,
-                               const char *payload);
 
 typedef struct {
     char unknown[45];
@@ -603,86 +593,9 @@ poords4_log(const char *format, ...)
     }
 }
 
-/* Writes a copy of the embedded icon to an arbitrary path. The icon probe uses
- * it to test the locations the notification service can actually read. */
-static int
-copy_icon_to(const char *path)
-{
-    if (!path)
-        return -1;
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0)
-        return -1;
-    size_t written = 0;
-    while (written < POORDS4_ICON_PNG_SIZE) {
-        ssize_t chunk = write(
-            fd, g_poor_ds4_icon_png + written,
-            POORDS4_ICON_PNG_SIZE - written);
-        if (chunk <= 0)
-            break;
-        written += (size_t)chunk;
-    }
-    close(fd);
-    if (written != POORDS4_ICON_PNG_SIZE) {
-        (void)unlink(path);
-        return -1;
-    }
-    return 0;
-}
-
-/* Copies a file byte for byte (used to publish the icon where the notification
- * overlay can read it). */
-static int
-copy_file(const char *from, const char *to)
-{
-    if (!from || !to)
-        return -1;
-    int source = open(from, O_RDONLY);
-    if (source < 0)
-        return -1;
-    int target = open(to, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (target < 0) {
-        close(source);
-        return -1;
-    }
-    char buffer[512];
-    ssize_t chunk;
-    int result = 0;
-    while ((chunk = read(source, buffer, sizeof(buffer))) > 0) {
-        if (write(target, buffer, (size_t)chunk) != chunk) {
-            result = -1;
-            break;
-        }
-    }
-    if (chunk < 0)
-        result = -1;
-    close(source);
-    close(target);
-    return result;
-}
-
-/* The notification overlay loads the toast icon by path from the user data
- * area, so the embedded PoorDS4 icon is materialised there. /data/poords4/
- * icon.png is the documented place to drop a replacement: whatever sits there
- * is published to the overlay path on the next run, without rebuilding the
- * payload. Returns the path the toast should reference, or NULL. */
-static const char *
-game_bridge_icon_path(void)
-{
-    mkdir(POORDS4_ICON_DIR, 0755);
-    mkdir(POORDS4_DATA_DIR, 0755);
-    if (access(GAME_BRIDGE_ICON_FILE, F_OK) != 0 &&
-        copy_icon_to(GAME_BRIDGE_ICON_FILE) != 0)
-        return NULL;
-    if (copy_file(GAME_BRIDGE_ICON_FILE, POORDS4_ICON_FILE) != 0)
-        return NULL;
-    poords4_log("[PoorDS4] toast icon installed at %s (%u bytes)\n",
-                POORDS4_ICON_FILE, (unsigned)POORDS4_ICON_PNG_SIZE);
-    return POORDS4_ICON_FILE;
-}
-
+/* Debug notification: the kernel notification popup, one line of text. */
 static void
-game_bridge_notify_kernel(const char *message)
+game_bridge_notify(const char *message)
 {
     GameBridgeNotifyRequest request;
     memset(&request, 0, sizeof(request));
@@ -695,218 +608,20 @@ game_bridge_notify_kernel(const char *message)
         (uint32_t)result, message ? message : "");
 }
 
-/* The notification text builder is shared by every toast: the body carries the
- * main line, the sub message the small line under it, and both are escaped
- * before they enter the JSON. */
-static void
-game_bridge_escape_json(const char *source, char *out, size_t cap)
-{
-    size_t index = 0;
-    if (!source)
-        source = "";
-    for (; source[index] != 0 && index + 1u < cap; ++index) {
-        char letter = source[index];
-        if (letter == '"' || letter == '\\' ||
-            (unsigned char)letter < 0x20u)
-            letter = '\'';
-        out[index] = letter;
-    }
-    out[index] = 0;
-}
-
-/* Native system notification: the interactive toast template the console uses
- * for its own messages (icon, title, body) instead of the plain kernel
- * notification above. Keeps every character that would break the JSON payload
- * out of the body, and falls back to the kernel notification when the native
- * call is rejected.
- *
- * The icon is a parameter: the embedded PoorDS4 icon when it could be
- * installed in the runtime data directory, the SDK sample icon otherwise. */
-#define POORDS4_NOTIFY_ICON_PREDEFINED(name) \
-    "{\"type\":\"Predefined\",\"parameters\":{\"icon\":\"" name "\"}}"
-#define POORDS4_NOTIFY_ICON_URL \
-    "{\"type\":\"Url\",\"parameters\":{\"url\":\"" POORDS4_ICON_FILE \
-    "\",\"iconSize\":\"Square\"}}"
-
-/* Fallback when the custom icon could not be published: a confirmed Predefined
- * name (the overlay only renders the predefined set for icons it can resolve). */
-#define POORDS4_NOTIFY_ICON_FALLBACK POORDS4_NOTIFY_ICON_PREDEFINED("ps_user")
-
-#define POORDS4_NOTIFY_TEMPLATE_HEAD \
-    "{\"rawData\":{\"viewTemplateType\":\"InteractiveToastTemplateB\"," \
-    "\"channelType\":\"Downloads\",\"useCaseId\":\"IDC\"," \
-    "\"toastOverwriteType\":\"No\",\"isImmediate\":true,\"priority\":100," \
-    "\"viewData\":{\"icon\":"
-
-#define POORDS4_NOTIFY_TEMPLATE_MID \
-    ",\"message\":{\"body\":\""
-
-#define POORDS4_NOTIFY_TEMPLATE_SUB \
-    "\"},\"subMessage\":{\"body\":\""
-
-#define POORDS4_NOTIFY_TEMPLATE_END \
-    "\"}}},\"createdDateTime\":\"2026-01-01T00:00:00.000Z\"," \
-    "\"updatedDateTime\":\"2026-01-01T00:00:00.000Z\"," \
-    "\"expirationDateTime\":\"2026-01-01T01:00:00.000Z\"," \
-    "\"localNotificationId\":\"%u\"}"
-
-/* Icon of the toast, resolved once on the first notification. */
-static const char *
-game_bridge_notify_icon(void)
-{
-    static const char *icon;
-    static int resolved;
-    if (!resolved) {
-        resolved = 1;
-        icon = game_bridge_icon_path() ?
-            POORDS4_NOTIFY_ICON_URL : POORDS4_NOTIFY_ICON_FALLBACK;
-    }
-    return icon;
-}
-
-static int
-game_bridge_notify_full(const char *message, const char *sub_message,
-                        const char *icon)
-{
-    static unsigned notify_serial;
-    char body[192];
-    char sub[128];
-    char payload[1024];
-    if (!message || !icon)
-        return 0;
-    game_bridge_escape_json(message, body, sizeof(body));
-    game_bridge_escape_json(sub_message, sub, sizeof(sub));
-    notify_serial++;
-    int length = snprintf(
-        payload, sizeof(payload),
-        POORDS4_NOTIFY_TEMPLATE_HEAD "%s"   /* icon */
-        POORDS4_NOTIFY_TEMPLATE_MID "%s"    /* main body */
-        POORDS4_NOTIFY_TEMPLATE_SUB "%s"    /* small line under it */
-        POORDS4_NOTIFY_TEMPLATE_END,
-        icon, body, sub, 900000u + notify_serial);
-    if (length <= 0 || (size_t)length >= sizeof(payload))
-        return 0;
-    int result = sceNotificationSend(0xfe /* system */, 1, payload);
-    if (result == 0) {
-        POORDS4_LOG_DEBUG(
-            "[PoorDS4] native notification result=0x%08x message=%s\n",
-            (uint32_t)result, message);
-    } else {
-        poords4_log(
-            "[PoorDS4] native notification failed result=0x%08x "
-            "message=%s\n", (uint32_t)result, message);
-    }
-    return result == 0 ? 1 : 0;
-}
-
-/* Toast with the standard icon policy: custom icon in the expanded view when
- * it could be installed, predefined preview icon in the collapsed popup. */
-static int
-game_bridge_notify_native_with_icon(const char *message,
-                                    const char *sub_message,
-                                    const char *icon)
-{
-    return game_bridge_notify_full(message, sub_message, icon);
-}
-
-/* Sends a toast whose small line under the main one is explicit. */
-static void
-game_bridge_notify_text(const char *message, const char *sub_message)
-{
-    if (game_bridge_notify_native_with_icon(
-            message, sub_message, game_bridge_notify_icon()))
-        return;
-    /* The kernel notification is the debug-style popup: release builds keep
-     * only system toasts and leave the failure in the log. Verbose logging
-     * brings the fallback back for diagnosis. */
-    if (!wireless_ds4_log_verbose_enabled())
-        return;
-    game_bridge_notify_kernel(message);
-}
-
-static void
-game_bridge_notify(const char *message)
-{
-    game_bridge_notify_text(message, "PoorDS4");
-}
-
-/* One-shot icon diagnostic: sends one toast per icon variant so the rendering
- * can be judged on the console. Triggered by creating
- * GAME_BRIDGE_ICON_PROBE_FILE, which is consumed. */
-static void
-game_bridge_icon_probe(void)
-{
-    /* Publish the icon where the notification overlay can read it, and keep the
-     * extra copies the probe compares. */
-    (void)game_bridge_icon_path();
-    (void)copy_icon_to("/tmp/poor_ds4_icon.png");
-    static const char *const labels[] = {
-        "Url /user/data (expected)",
-        "Url /data (older, no icon)",
-        "Url file:// /user/data",
-        "Url /tmp",
-        "predefined ps_user",
-        "predefined system",
-        "predefined download",
-        "predefined messages",
-        "predefined headset",
-        "predefined trophies",
-    };
-    static const char *const icons[] = {
-        POORDS4_NOTIFY_ICON_URL,
-        "{\"type\":\"Url\",\"parameters\":{\"url\":\""
-            GAME_BRIDGE_ICON_FILE "\",\"iconSize\":\"Square\"}}",
-        "{\"type\":\"Url\",\"parameters\":{\"url\":\"file://"
-            POORDS4_ICON_FILE "\",\"iconSize\":\"Square\"}}",
-        "{\"type\":\"Url\",\"parameters\":{\"url\":\"/tmp/poor_ds4_icon.png\""
-            ",\"iconSize\":\"Square\"}}",
-        POORDS4_NOTIFY_ICON_PREDEFINED("ps_user"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("system"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("download"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("messages"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("headset"),
-        POORDS4_NOTIFY_ICON_PREDEFINED("trophies"),
-    };
-    const unsigned total = (unsigned)(sizeof(icons) / sizeof(icons[0]));
-    for (unsigned index = 0; index < total; ++index) {
-        char message[96];
-        snprintf(message, sizeof(message),
-                 "PoorDS4 icon test %u/%u: %s", index + 1u, total,
-                 labels[index]);
-        int ok = game_bridge_notify_full(message, "PoorDS4 icon test",
-                                         icons[index]);
-        /* Always logged: this line is what tells us remotely which variant was
-         * sent and whether the service accepted it. */
-        poords4_log("[PoorDS4] icon probe %u/%u ok=%d %s\n",
-                    index + 1u, total, ok, labels[index]);
-    }
-}
-
-static void
-game_bridge_icon_probe_poll(void)
-{
-    if (unlink(GAME_BRIDGE_ICON_PROBE_FILE) != 0)
-        return;
-    poords4_log("[PoorDS4] icon probe requested\n");
-    game_bridge_icon_probe();
-}
-
 /* Reports how many wireless controllers the reader associated with a slot. The
- * body stays minimal ("3 controller active") and the event that triggered the
- * toast becomes the small line under it. A single user name was misleading
- * once more than one DS4 is bridged, because every toast showed only the user
- * of the last detected DS4. */
+ * debug popup is a single line, so the count and the event that triggered it
+ * share it. A single user name was misleading once more than one DS4 is
+ * bridged, because every toast showed only the user of the last detected DS4. */
 static void
 notify_with_ds4_count(const char *prefix, const char *suffix,
                       int32_t ds4_count)
 {
-    char body[64];
-    char sub[160];
+    char message[256];
     int count = ds4_count > 0 ? (int)ds4_count : 0;
-    snprintf(body, sizeof(body), "%d controller active", count);
-    snprintf(sub, sizeof(sub), "%s%s", prefix ? prefix : "",
-             suffix ? suffix : "");
-    game_bridge_notify_text(body, sub);
+    snprintf(message, sizeof(message),
+             "PoorDS4: %d controller active - %s%s", count,
+             prefix ? prefix : "", suffix ? suffix : "");
+    game_bridge_notify(message);
 }
 
 /* Native kernel log (klog) sink of this process, resolved once at startup.
@@ -1780,7 +1495,6 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
         if (input_frames != 0 && (input_frames % 600u) == 0 &&
             input_frames != last_health_frame) {
             wireless_ds4_log_verbose_poll();
-            game_bridge_icon_probe_poll();
             PoorDS4RemoteReaderStatus reader_watch;
             memset(&reader_watch, 0, sizeof(reader_watch));
             if (reader_pid > 0 && reader_args != 0 &&
@@ -2334,7 +2048,6 @@ main(void)
         if (lifecycle_should_stop())
             break;
         wireless_ds4_log_verbose_poll();
-        game_bridge_icon_probe_poll();
 
         /* Never modify a newly launched game while the source reader is
          * absent. A reader can be lost during Bluetooth re-publication at the

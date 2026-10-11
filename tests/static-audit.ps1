@@ -15,8 +15,6 @@ $bridge = [IO.File]::ReadAllText(
     (Join-Path $repo 'payload/wireless_ds4.c'))
 $makefile = [IO.File]::ReadAllText(
     (Join-Path $repo 'payload/Makefile'))
-$iconHeader = [IO.File]::ReadAllText(
-    (Join-Path $repo 'payload/assets/poor_ds4_icon.h'))
 
 Assert-True ($makefile.Contains('VERSION      := 1.0.0')) `
     'Makefile release version is not 1.0.0.'
@@ -34,7 +32,7 @@ Assert-True ($makefile.Contains(
     'RUNTIME_LIBS := -nodefaultlibs -lc -lkernel_web -lSceLibcInternal')) `
     'Build does not declare its minimal SDK runtime dependencies.'
 Assert-True ($makefile.Contains(
-    'BRIDGE_LIBS  := $(RUNTIME_LIBS) -lSceUserService -lSceNotification')) `
+    'BRIDGE_LIBS  := $(RUNTIME_LIBS) -lSceUserService')) `
     'Automatic payload is missing its direct user-service dependency.'
 Assert-True ($makefile.Contains(
     '$(STRIP) --strip-debug $(TARGET) $(STATUS_TARGET) $(STOP_TARGET)')) `
@@ -43,9 +41,8 @@ Assert-True (-not $makefile.Contains('-lSceNet')) `
     'Build still links the SDK networking library without a network import.'
 Assert-True (-not $makefile.Contains('EXP_TARGET')) `
     'Build still produces the retired experimental artifact.'
-Assert-True ($makefile.Contains('tests/static-audit.ps1') `
-    -and $makefile.Contains('tests/validate_notify_json.py')) `
-    'The audit target does not run the static audit and the payload validator.'
+Assert-True ($makefile.Contains('tests/static-audit.ps1')) `
+    'The audit target does not run the static audit.'
 Assert-True ($makefile.Contains('TARGET        := PoorDS4-v$(VERSION).elf')) `
     'Automatic payload does not use the PoorDS4 release name.'
 Assert-True ($makefile.Contains('STATUS_TARGET := PoorDS4-status.elf')) `
@@ -82,44 +79,17 @@ $verbosePolls = ([regex]::Matches($main,
 Assert-True ($verbosePolls -ge 3) `
     'Verbose log switch is not polled from the supervisor loops.'
 
-Assert-True ($main.Contains('#include "assets/poor_ds4_icon.h"')) `
-    'Bridge does not embed the PoorDS4 toast icon.'
-Assert-True ($main.Contains('game_bridge_icon_path(void)') `
-    -and $main.Contains('GAME_BRIDGE_ICON_FILE  POORDS4_DATA_DIR "/icon.png"')) `
-    'Toast icon is not installed in the runtime data directory.'
-Assert-True ($main.Contains('POORDS4_NOTIFY_ICON_URL') `
-    -and $main.Contains('POORDS4_NOTIFY_ICON_FALLBACK')) `
-    'Toast has no Url icon or no fallback icon.'
-Assert-True ($main.Contains('POORDS4_ICON_DIR       "/user/data/poords4"')) `
-    'Toast icon is not published to the user data area.'
-Assert-True (-not $main.Contains('platformViews')) `
-    'Toast payload carries platformViews again.'
-Assert-True ($main.Contains('GAME_BRIDGE_ICON_PROBE_FILE') `
-    -and $main.Contains('game_bridge_icon_probe_poll();')) `
-    'Icon probe trigger is missing.'
-Assert-True ($iconHeader.Contains('#define POORDS4_ICON_PNG_SIZE ') `
-    -and $iconHeader.Contains('0x89, 0x50, 0x4e, 0x47')) `
-    'Embedded toast icon is not a generated PNG.'
-Assert-True ($makefile.Contains('assets/poor_ds4_icon.h')) `
-    'Bridge build does not depend on the embedded icon header.'
-Assert-True ($main.Contains('"%d controller active"')) `
-    'Controller count toast does not use the short "N controller active" body.'
-Assert-True ($main.Contains('POORDS4_NOTIFY_TEMPLATE_SUB "%s"')) `
-    'Toast sub message is not dynamic.'
-Assert-True ($main.Contains('game_bridge_notify_text(')) `
-    'Toast builder does not expose an explicit sub message.'
+Assert-True ($main.Contains('game_bridge_notify(const char *message)') `
+    -and $main.Contains('sceKernelSendNotificationRequest(')) `
+    'The debug notification popup is not sent through the kernel request.'
+Assert-True ($main.Contains('"PoorDS4: %d controller active - %s%s"')) `
+    'Controller count notification does not carry count and event on one line.'
+Assert-True (-not $main.Contains('sceNotificationSend') `
+    -and -not $main.Contains('POORDS4_NOTIFY_TEMPLATE') `
+    -and -not $main.Contains('game_bridge_icon')) `
+    'Native system toast or toast-icon code is still present.'
 Assert-True ($main.Contains('game bridge start version=%s')) `
     'Startup banner does not log the release version.'
-Assert-True ($main.Contains('if (!wireless_ds4_log_verbose_enabled())') `
-    -and $main.Contains('game_bridge_notify_kernel(message);')) `
-    'Kernel debug popup is not gated behind verbose logging.'
-$python = Get-Command python3 -ErrorAction SilentlyContinue
-if ($python) {
-    & $python.Source (Join-Path $repo 'tests/validate_notify_json.py') |
-        Out-Null
-    Assert-True ($LASTEXITCODE -eq 0) `
-        'Native toast JSON payload is not valid.'
-}
 Assert-True ($main.Contains('install_result == 0 ? 5u : 15u')) `
     'Bounded retry for a transient fail-closed game snapshot is missing.'
 Assert-True ($main.Contains(
@@ -264,17 +234,13 @@ $expectedTracked = @(
     'docs/ARCHITECTURE.md',
     'docs/FIRMWARE_SUPPORT.md',
     'payload/Makefile',
-    'payload/assets/poor_ds4_icon.h',
-    'payload/assets/poor_ds4_icon.png',
     'payload/game_pad_bridge_main.c',
     'payload/game_pad_bridge_status_main.c',
     'payload/pad_types.h',
     'payload/stop_game_pad_bridge_main.c',
     'payload/wireless_ds4.c',
     'payload/wireless_ds4.h',
-    'tests/static-audit.ps1',
-    'tests/validate_notify_json.py',
-    'tools/make_icon.py'
+    'tests/static-audit.ps1'
 )
 Assert-True ($tracked.Count -eq $expectedTracked.Count) `
     'Tracked file count does not match the focused public tree.'
