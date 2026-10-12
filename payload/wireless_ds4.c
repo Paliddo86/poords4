@@ -5606,6 +5606,302 @@ game_bridge_select_pad_handle(
     return *out_handle >= 0 ? 0 : -1;
 }
 
+/* Game admission: shared target selector.
+ *
+ * Most titles run their game in /app0/eboot.bin, and that process keeps the
+ * existing rule: exactly one eboot.bin is selected, more than one fails
+ * closed. Some titles (Metal Gear Solid Master Collection Vol. 2: MGS4 and
+ * Peace Walker) start a launcher eboot.bin that exits after spawning the real
+ * game from a nested executable such as /app0/mgs4/mgs4.elf. The kernel names
+ * that process after its app0-relative path ("mgs4/mgs4.elf"), so an
+ * eboot.bin-only scan never sees the game.
+ *
+ * The fallback runs only when no eboot.bin exists and admits exactly one
+ * process that satisfies all of:
+ *   - its kernel name contains a '/', the shape of an app0-relative nested
+ *     path (no system service or ELF-loader payload is named that way);
+ *   - its main executable (rtld handle 0, read from the kernel's dynlib list)
+ *     is mapped from a path ending in "/app0/<name>" and ending in ".elf";
+ *     names are truncated to COMMLEN bytes, so the kernel path is the
+ *     authority and a truncated name only has to be its prefix;
+ *   - libScePad, libSceLibcInternal and libkernel(_sys) are loaded.
+ * No candidate returns -2, two or more verified candidates or a malformed
+ * process list return -3 (fail closed), and a candidate whose path or modules
+ * are not readable yet returns -4. Both the supervisor and the installer call
+ * the same selector; every later ABI, import-ownership and rollback check is
+ * unchanged. */
+#if defined(__PROSPERO__)
+#define POORDS4_KI_COMM_LENGTH       19u
+#define POORDS4_NESTED_SCAN_LIMIT    16u
+#define POORDS4_NESTED_PATH_CAPACITY 256u
+
+enum {
+    POORDS4_NESTED_SELECTED = 1,
+    POORDS4_NESTED_WAITING_PATH,
+    POORDS4_NESTED_WAITING_MODULES,
+    POORDS4_NESTED_PATH_MISMATCH
+};
+
+static pid_t g_nested_log_pid = -1;
+static int g_nested_log_verdict;
+static int g_nested_log_ambiguous;
+
+/* A nested app0-relative name: printable, at least one '/', no leading or
+ * trailing '/', no "..". This is only a cheap pre-filter; the kernel path
+ * check below is what admits a process. */
+static int
+poords4_nested_game_name_ok(const char *name, size_t length)
+{
+    int slash_seen = 0;
+    if (!name || length < 3 || name[0] == '/' || name[length - 1u] == '/')
+        return 0;
+    for (size_t index = 0; index < length; ++index) {
+        unsigned char c = (unsigned char)name[index];
+        if (c <= 0x20u || c >= 0x7fu)
+            return 0;
+        if (c == '/')
+            slash_seen = 1;
+        if (c == '.' && index + 1u < length && name[index + 1u] == '.')
+            return 0;
+    }
+    return slash_seen;
+}
+
+/* Copies the path of the process's main executable (rtld handle 0) from the
+ * kernel dynlib list, using the same object walk as the import scanner. */
+static int
+poords4_process_main_object_path(pid_t pid, char *out, size_t out_size)
+{
+    if (pid <= 0 || !out || out_size < 2u)
+        return -1;
+    memset(out, 0, out_size);
+    uint64_t proc = (uint64_t)kernel_get_proc(pid);
+    uint64_t shared_object = 0;
+    uint64_t object_address = 0;
+    if (!proc || kernel_copyout(
+            proc + 0x3e8, &shared_object, sizeof(shared_object)) != 0 ||
+        !shared_object || kernel_copyout(
+            shared_object, &object_address, sizeof(object_address)) != 0)
+        return -1;
+    for (unsigned index = 0; object_address && index < 512u; ++index) {
+        GameBridgeDynlibObjectPrefix object;
+        memset(&object, 0, sizeof(object));
+        if (kernel_copyout(
+                (intptr_t)object_address, &object, sizeof(object)) != 0)
+            return -1;
+        object_address = object.next;
+        if (object.handle != 0)
+            continue;
+        if (!object.path || kernel_copyout(
+                (intptr_t)object.path, out, out_size - 1u) != 0)
+            return -1;
+        out[out_size - 1u] = '\0';
+        return out[0] != '\0' ? 0 : -1;
+    }
+    return -1;
+}
+
+/* The kernel-recorded main executable must end in "/app0/<name>" and ".elf".
+ * A name that fills the whole kernel name field may be truncated, so it only
+ * has to be a prefix of the app0-relative part of the path. */
+static int
+poords4_nested_game_path_ok(const char *name, size_t name_length,
+                            const char *path)
+{
+    static const char app_root[] = "/app0/";
+    const size_t root_length = sizeof(app_root) - 1u;
+    size_t path_length = 0;
+    while (path_length < POORDS4_NESTED_PATH_CAPACITY &&
+           path[path_length] != '\0')
+        ++path_length;
+    if (path_length < root_length + name_length || path_length < 4u ||
+        memcmp(path + path_length - 4u, ".elf", 4u) != 0)
+        return 0;
+    if (name_length < POORDS4_KI_COMM_LENGTH) {
+        size_t start = path_length - name_length - root_length;
+        return memcmp(path + start, app_root, root_length) == 0 &&
+               memcmp(path + start + root_length, name, name_length) == 0;
+    }
+    for (size_t start = 0;
+         start + root_length + name_length <= path_length; ++start) {
+        if (memcmp(path + start, app_root, root_length) == 0 &&
+            memcmp(path + start + root_length, name, name_length) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static int
+poords4_game_target_modules_ready(pid_t pid)
+{
+    uint32_t pad = 0;
+    uint32_t libc = 0;
+    uint32_t kernel = 0;
+    return get_lib_quiet(pid, "libScePad", &pad) == 0 &&
+           get_lib_quiet(pid, "libSceLibcInternal", &libc) == 0 &&
+           (get_lib_quiet(pid, "libkernel_sys", &kernel) == 0 ||
+            get_lib_quiet(pid, "libkernel", &kernel) == 0);
+}
+
+/* One line per candidate and verdict change, so the 1 s waiting loop and the
+ * installer retries do not repeat it. */
+static void
+poords4_nested_game_log(pid_t pid, int verdict, const char *name,
+                        const char *path)
+{
+    static const char *const verdict_names[] = {
+        "unknown", "selected", "waiting_path", "waiting_modules",
+        "path_mismatch"};
+    if (pid == g_nested_log_pid && verdict == g_nested_log_verdict)
+        return;
+    g_nested_log_pid = pid;
+    g_nested_log_verdict = verdict;
+    poords4_log(
+        "[PoorDS4] nested game candidate pid=%d name=%s path=%s "
+        "verdict=%s\n", pid, name ? name : "", path ? path : "",
+        verdict > 0 && verdict <= POORDS4_NESTED_PATH_MISMATCH
+            ? verdict_names[verdict] : verdict_names[0]);
+}
+
+static int
+poords4_game_target_find_nested(pid_t *out_pid)
+{
+    int mib[4] = {1, 14, 8, 0};
+    pid_t me = getpid();
+    size_t buffer_size = 0;
+    pid_t seen[POORDS4_NESTED_SCAN_LIMIT];
+    size_t seen_count = 0;
+    pid_t chosen = -1;
+    pid_t pending = -1;
+    int pending_count = 0;
+    int ambiguous = 0;
+    char name[POORDS4_NESTED_PATH_CAPACITY];
+    char path[POORDS4_NESTED_PATH_CAPACITY];
+
+    if (out_pid)
+        *out_pid = -1;
+    if (sysctl(mib, 4, NULL, &buffer_size, NULL, 0) != 0 ||
+        buffer_size == 0 || buffer_size > 4u * 1024u * 1024u)
+        return -2;
+    size_t allocation_size = buffer_size;
+    uint8_t *buffer = malloc(allocation_size);
+    if (!buffer)
+        return -2;
+    if (sysctl(mib, 4, buffer, &buffer_size, NULL, 0) != 0 ||
+        buffer_size > allocation_size) {
+        free(buffer);
+        return -2;
+    }
+    const uint8_t *end = buffer + buffer_size;
+    for (uint8_t *record = buffer; record < end;) {
+        if ((size_t)(end - record) < sizeof(int)) {
+            ambiguous = 1;
+            break;
+        }
+        int record_size = 0;
+        memcpy(&record_size, record, sizeof(record_size));
+        if (record_size < 448 ||
+            (size_t)record_size > (size_t)(end - record)) {
+            ambiguous = 1;
+            break;
+        }
+        pid_t pid = -1;
+        memcpy(&pid, record + 72, sizeof(pid));
+        const char *comm = (const char *)(record + 447);
+        size_t limit = (size_t)record_size - 447u;
+        size_t length = 0;
+        while (length < limit && comm[length] != '\0')
+            ++length;
+        record += (size_t)record_size;
+        if (pid <= 0 || pid == me || length == limit ||
+            length >= sizeof(name) ||
+            !poords4_nested_game_name_ok(comm, length))
+            continue;
+        int duplicate = 0;
+        for (size_t index = 0; index < seen_count; ++index) {
+            if (seen[index] == pid) {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate)
+            continue;
+        if (seen_count >= POORDS4_NESTED_SCAN_LIMIT) {
+            ambiguous = 1;
+            break;
+        }
+        seen[seen_count++] = pid;
+        memcpy(name, comm, length);
+        name[length] = '\0';
+
+        if (poords4_process_main_object_path(pid, path, sizeof(path)) != 0) {
+            poords4_nested_game_log(
+                pid, POORDS4_NESTED_WAITING_PATH, name, "");
+            pending = pid;
+            pending_count++;
+            continue;
+        }
+        if (!poords4_nested_game_path_ok(name, length, path)) {
+            poords4_nested_game_log(
+                pid, POORDS4_NESTED_PATH_MISMATCH, name, path);
+            continue;
+        }
+        if (!poords4_game_target_modules_ready(pid)) {
+            poords4_nested_game_log(
+                pid, POORDS4_NESTED_WAITING_MODULES, name, path);
+            pending = pid;
+            pending_count++;
+            continue;
+        }
+        if (chosen > 0) {
+            ambiguous = 1;
+            break;
+        }
+        chosen = pid;
+        poords4_nested_game_log(pid, POORDS4_NESTED_SELECTED, name, path);
+    }
+    free(buffer);
+    if (ambiguous) {
+        if (!g_nested_log_ambiguous)
+            poords4_log(
+                "[PoorDS4] nested game discovery is ambiguous or "
+                "malformed; no process selected\n");
+        g_nested_log_ambiguous = 1;
+        return -3;
+    }
+    g_nested_log_ambiguous = 0;
+    if (chosen > 0) {
+        if (out_pid)
+            *out_pid = chosen;
+        return 1;
+    }
+    if (pending_count > 0) {
+        if (out_pid && pending_count == 1)
+            *out_pid = pending;
+        return -4;
+    }
+    return -2;
+}
+
+/* Shared by the supervisor (find_target) and the installer (run_passive). */
+static int
+poords4_game_target_select(pid_t *out_pid)
+{
+    pid_t pids[8];
+    if (out_pid)
+        *out_pid = -1;
+    size_t count = find_pids("eboot.bin", pids, 8);
+    if (count > 1)
+        return -3;
+    if (count == 1) {
+        if (out_pid)
+            *out_pid = pids[0];
+        return 1;
+    }
+    return poords4_game_target_find_nested(out_pid);
+}
+#endif
+
 static int
 wireless_ds4_game_bridge_run_passive(
     const PoorDS4PadSource *source, pid_t *out_game_pid,
@@ -5615,7 +5911,6 @@ wireless_ds4_game_bridge_run_passive(
     (void)source; (void)out_game_pid; (void)out_args_kaddr;
     return -1;
 #else
-    pid_t pids[8];
     int report_fd = -1;
     int result = -1;
     uint32_t patched_count = 0;
@@ -5632,12 +5927,10 @@ wireless_ds4_game_bridge_run_passive(
         source->pad_index < 0 || source->pad_index >= 8)
         return -1;
 
-    size_t process_count = find_pids("eboot.bin", pids, 8);
-    if (process_count == 0)
-        return -2;
-    if (process_count != 1)
-        return -3;
-    pid_t target = pids[0];
+    pid_t target = -1;
+    int selection = poords4_game_target_select(&target);
+    if (selection != 1)
+        return selection == -3 ? -3 : -2;
     if (out_game_pid)
         *out_game_pid = target;
 
@@ -6288,15 +6581,15 @@ wireless_ds4_game_bridge_find_target(pid_t *out_game_pid)
     (void)out_game_pid;
     return -1;
 #else
-    pid_t pids[8];
+    pid_t target = -1;
     if (out_game_pid)
         *out_game_pid = -1;
-    size_t count = find_pids("eboot.bin", pids, 8);
-    if (count == 0)
-        return -2;
-    if (count != 1)
-        return -3;
-    pid_t target = pids[0];
+    int selection = poords4_game_target_select(&target);
+    if (selection != 1) {
+        if (selection == -4 && out_game_pid)
+            *out_game_pid = target;
+        return selection;
+    }
     if (out_game_pid)
         *out_game_pid = target;
     uint32_t libpad = 0;

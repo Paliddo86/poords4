@@ -26,7 +26,27 @@ sample alone is never treated as proof of DS4 identity: public VID/PID data,
 ## Game admission
 
 The supervisor accepts exactly one `eboot.bin` process whose `libScePad`, libc,
-and libkernel modules are ready. Before inspecting that process, it snapshots
+and libkernel modules are ready. Two or more `eboot.bin` processes fail closed.
+
+Some titles start a launcher `eboot.bin` that exits after spawning the game
+from a nested executable; the kernel names that process after its
+app0-relative path (Metal Gear Solid Master Collection Vol. 2 uses
+`mgs4/mgs4.elf` and `mgspw/mgspw.elf`). Only when no `eboot.bin` exists, the
+same shared selector, used by both the supervisor and the installer, accepts
+exactly one process that satisfies all of:
+
+- its kernel name contains `/` (no system service or ELF-loader payload is
+  named that way, so nothing else is inspected);
+- the kernel's dynlib list records its main executable (handle 0) at a path
+  ending in `/app0/<name>` and `.elf`; kernel names are truncated to 19
+  bytes, so a name that fills the field only has to be a prefix of that path;
+- its `libScePad`, libc, and libkernel modules are ready.
+
+Two or more verified candidates, or a malformed process list, fail closed. A
+candidate whose path or modules are not readable yet is reported as waiting
+and is never selected. A selection that disappears between discovery and
+installation returns the installer to waiting instead of reporting an error.
+Every check below applies unchanged to a nested executable. Before inspecting that process, it snapshots
 the RemotePlay reader and requires a ready, healthy, connected DS4. Reader
 loss blocks admission, cooperatively stops the old reader, invalidates its
 source identity, and completes rediscovery before the launch grace restarts.

@@ -54,7 +54,9 @@ Only run one automatic instance. PoorDS4 follows later game launches without rei
 1. Enumerate the logged-in and Invite users' pad slots.
 2. Identify a live DS4 through public device metadata and Sony's DS4 API.
 3. Read its 120-byte `ScePadData` state at 120 Hz in `SceRemotePlay`.
-4. Wait for one fully initialized native game process.
+4. Wait for one fully initialized native game process: the title's
+   `eboot.bin`, or, for titles whose launcher hands off to a nested game
+   executable (for example `/app0/mgs4/mgs4.elf`), that single executable.
 5. Validate the game's pad ABI, client table, player slot, import owners, and
    target mappings before changing anything.
 6. Redirect only validated pad imports to a game-owned anonymous mapping and

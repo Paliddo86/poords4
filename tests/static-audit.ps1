@@ -201,6 +201,25 @@ Assert-True (-not $bridge.Contains('game_pad_bridge_receiver_stub')) `
 Assert-True (-not $bridge.Contains('wireless_ds4_game_bridge_run(')) `
     'Retired game-ptrace installer is present.'
 
+$selectorCalls = ([regex]::Matches($bridge,
+    [regex]::Escape('poords4_game_target_select(&target)'))).Count
+Assert-True ($selectorCalls -eq 2) `
+    'Supervisor discovery and installer do not share one target selector.'
+$ebootScans = ([regex]::Matches($bridge,
+    [regex]::Escape('find_pids("eboot.bin", pids, 8)'))).Count
+Assert-True ($ebootScans -eq 1) `
+    'An eboot.bin scan bypasses the shared target selector.'
+Assert-True ($bridge.Contains('return selection == -3 ? -3 : -2;')) `
+    'Installer can report a selection race as an error without a game pid.'
+Assert-True ($bridge.Contains(
+    'static const char app_root[] = "/app0/";') `
+    -and $bridge.Contains('poords4_process_main_object_path(pid, path,')) `
+    'Nested game admission does not verify the kernel app0 executable path.'
+Assert-True ($bridge.Contains('nested game discovery is ambiguous')) `
+    'Ambiguous nested game candidates do not fail closed.'
+Assert-True ($bridge.Contains('poords4_game_target_modules_ready(pid)')) `
+    'Nested game admission does not require ready runtime modules.'
+
 $installerStart = $bridge.IndexOf(
     'wireless_ds4_game_bridge_run_passive(',
     [StringComparison]::Ordinal)
