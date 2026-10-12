@@ -4,6 +4,25 @@ All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; `1.0.0` is the first stable release, earlier wireless
 bridge candidates used `0.1.0-rcN`.
 
+## [Unreleased]
+
+### Fixed
+
+- **Titles that hand off to a nested game executable**: a launcher
+  `eboot.bin` that exits after starting the game from a nested executable
+  (Metal Gear Solid 4 and Peace Walker in Master Collection Vol. 2 use
+  `mgs4/mgs4.elf` and `mgspw/mgspw.elf`) left the DS4 working in the
+  collection menu only. Game discovery and the installer now share one
+  selector: `eboot.bin` keeps its exact previous rule and precedence, and only
+  when no `eboot.bin` exists it admits exactly one process whose kernel name
+  contains `/`, whose main executable the kernel dynlib list records under
+  `/app0/<name>` ending in `.elf`, and whose pad, libc and libkernel modules
+  are ready. Ambiguous or malformed process lists fail closed, and all later
+  ABI, import-ownership and rollback checks are unchanged.
+  - The log records each candidate once, e.g.
+    `nested game candidate pid=169 name=mgspw/mgspw.elf
+    path=/app0/mgspw/mgspw.elf verdict=selected`.
+
 ## [1.0.0] - 2026-10-10
 
 First stable release. A DS4 paired to any logged-in profile is detected,
