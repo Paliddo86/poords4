@@ -4,6 +4,34 @@ All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; `1.0.0` is the first stable release, earlier wireless
 bridge candidates used `0.1.0-rcN`.
 
+## [1.1.0-beta.3] - 2026-10-13
+
+### Changed
+
+- **The in-target automatic discovery is paused while a game session is
+  bridged.** Once a title is bridged it already has its controllers, so
+  re-probing the candidate users every ~3 s only opened and closed pads on the
+  users that can never take a reader slot - the owner of a natively connected
+  DualSense above all - while the game was running. The supervisor pauses the
+  rescan when a session starts and resumes it when the session ends, so the
+  pre-game discovery that makes the reset combo unnecessary is unchanged.
+  `wireless_ds4_remote_reader_pause_rescan()` writes the new
+  `RemotePadReaderArgs.rescan_paused` flag, which fits in what used to be tail
+  padding: the reader argument block keeps its 1944-byte size. The flag is
+  reported by the status payload as `reader_rescan_paused`.
+
+### Fixed
+
+- **The "N controller active - wireless DS4 now bridged" popup was raised
+  twice**: the block that logs `automatic discovery: fed mask=...` and announces
+  the count had been duplicated in the previous build.
+- A brief lost read no longer flips the fed mask: the multi-slot feed holds a
+  slot for up to 30 frames before it deactivates it (the direct lease keeps the
+  game supplied for several hundred frames), so a transient miss can no longer
+  produce a spurious "joined/left" popup pair. The fed mask is also reset at
+  session start instead of being inherited from the previous session, which
+  raised an immediate extra "now bridged" popup at every game launch.
+
 ## [1.1.0-beta.2] - 2026-10-13
 
 ### Fixed

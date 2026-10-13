@@ -29,6 +29,12 @@ int wireless_ds4_remote_reader_read_slot(pid_t pid, intptr_t args_address,
                                         void *pad_data, uint32_t pad_data_len,
                                         uint32_t *out_seq);
 int wireless_ds4_remote_reader_stop(pid_t pid, intptr_t args_address);
+/* Pauses or resumes the in-target automatic discovery. The supervisor pauses it
+ * while a game session is bridged: once the title has its controllers the
+ * rescan has nothing left to find and would only keep opening and closing pads
+ * on users that can never take a reader slot. */
+int wireless_ds4_remote_reader_pause_rescan(pid_t pid, intptr_t args_address,
+                                            int paused);
 
 /* Selects the currently active (foreground) user whose DS4 should become the
  * primary bridged controller. Pass -1 when there is no active user. */
@@ -88,6 +94,9 @@ typedef struct {
     uint32_t rescan_non_ds4;
     int32_t  rescan_last_non_ds4_user;
     uint32_t rescan_count;
+    /* Non-zero while the supervisor keeps the in-target automatic discovery
+     * paused (a game session is bridged). */
+    uint32_t rescan_paused;
     /* User id bound to each reader slot (0xffffffff when the slot is free). The
      * supervisor matches these against the game client-table user ids to route
      * every controller to its own game slot. */

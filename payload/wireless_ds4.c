@@ -726,6 +726,11 @@ typedef struct {
     volatile uint32_t rescan_probes;
     volatile uint32_t rescan_non_ds4;
     volatile int32_t  rescan_last_non_ds4_user;
+    /* Set by the supervisor while a game session is bridged. Once the title has
+     * its controllers, re-probing every candidate user has no benefit: it only
+     * opens and closes pads on users that can never take a slot (the owner of a
+     * natively connected DualSense) and adds pad traffic while the game runs. */
+    volatile uint32_t rescan_paused;
 } RemotePadReaderArgs;
 
 _Static_assert(sizeof(ScePadData) == 120,
@@ -868,8 +873,10 @@ remote_pad_reader_stub(void *arg)
         }
 
         /* Automatic discovery of controllers that appeared after the reader
-         * started: re-open the candidate users and fill any free slot. */
-        if (a->candidate_count > 0 && a->rescan_interval_loops != 0u) {
+         * started: re-open the candidate users and fill any free slot. Paused by
+         * the supervisor while a game session is bridged. */
+        if (a->candidate_count > 0 && a->rescan_interval_loops != 0u &&
+            a->rescan_paused == 0u) {
             if (rescan_countdown > 0u) {
                 rescan_countdown--;
             } else {
@@ -4021,6 +4028,7 @@ wireless_ds4_remote_reader_status(
     out_status->rescan_non_ds4 = snapshot.rescan_non_ds4;
     out_status->rescan_last_non_ds4_user = snapshot.rescan_last_non_ds4_user;
     out_status->rescan_count = snapshot.rescan_count;
+    out_status->rescan_paused = snapshot.rescan_paused;
     for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s)
         out_status->slot_users[s] = snapshot.slot_users[s];
     out_status->reader_mode = snapshot.reader_mode;
@@ -4110,6 +4118,33 @@ wireless_ds4_remote_reader_stop(pid_t pid, intptr_t args_kaddr)
                     ready, final_stop);
     }
     return -1;
+#endif
+}
+
+int
+wireless_ds4_remote_reader_pause_rescan(pid_t pid, intptr_t args_kaddr,
+                                        int paused)
+{
+#if !defined(__PROSPERO__)
+    (void)pid; (void)args_kaddr; (void)paused;
+    return -1;
+#else
+    if (pid <= 0 || !args_kaddr)
+        return -1;
+    uint32_t value = paused ? 1u : 0u;
+    intptr_t paused_addr = args_kaddr +
+        (intptr_t)offsetof(RemotePadReaderArgs, rescan_paused);
+    int write_result = remote_reader_copyin(
+        pid, &value, paused_addr, sizeof(value));
+    if (write_result != 0)
+        return -1;
+    uint32_t observed = 0;
+    if (remote_reader_copyout(pid, paused_addr, &observed,
+                              sizeof(observed)) != 0)
+        return -1;
+    if (observed != value)
+        return -1;
+    return 0;
 #endif
 }
 

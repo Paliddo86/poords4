@@ -154,6 +154,7 @@ main(void)
         "reader_count=%u\n"
         "reader_rescan_count=%u\nreader_rescan_probes=%u\n"
         "reader_rescan_non_ds4=%u\nreader_rescan_last_non_ds4_user=0x%08x\n"
+        "reader_rescan_paused=%u\n"
         "reader_slot_users=0x%08x,0x%08x,0x%08x,0x%08x\n"
         "--- bridge telemetry ---\n"
         "bridge_identity_result=%d\nbridge_pid=%d\n"
@@ -191,6 +192,7 @@ main(void)
         (unsigned long long)reader.timestamp, reader.count,
         reader.rescan_count, reader.rescan_probes,
         reader.rescan_non_ds4, (uint32_t)reader.rescan_last_non_ds4_user,
+        reader.rescan_paused,
         (uint32_t)reader.slot_users[0], (uint32_t)reader.slot_users[1],
         (uint32_t)reader.slot_users[2], (uint32_t)reader.slot_users[3],
         bridge_identity_result, bridge_pid,

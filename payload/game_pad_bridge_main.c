@@ -62,6 +62,37 @@ static PoorDS4PadSource g_pad_source = {-1, -1, -1, 0, 0};
  * snapshot (copying the whole reader argument block on every frame would be far
  * too expensive). -1 marks a slot that is free or not yet known. */
 static int32_t g_reader_slot_users[POORDS4_MAX_SLOTS] = {-1, -1, -1, -1};
+
+/* Multi-slot feed state, at file scope so a new session starts from a clean
+ * mask: a mask inherited from the previous session raised an immediate spurious
+ * "now bridged" popup and log line at every game launch. */
+static uint32_t g_multi_fed_mask = 0;
+static unsigned g_multi_unfed_frames[POORDS4_MAX_SLOTS] = {0, 0, 0, 0};
+
+/* A slot whose data disappeared is only released after a sustained loss: the
+ * game keeps the last published frame (the direct lease covers several hundred
+ * frames) and every mask flip would raise a "now bridged" popup and a log line.
+ * Returns non-zero while the slot must still be reported as fed. */
+#define POORDS4_FEED_LOST_FRAMES 30u
+static int
+hold_fed_slot(pid_t game_pid, intptr_t bridge_args, unsigned s)
+{
+    if (g_multi_unfed_frames[s] < POORDS4_FEED_LOST_FRAMES) {
+        g_multi_unfed_frames[s]++;
+        return 1;
+    }
+    g_multi_unfed_frames[s] = 0;
+    (void)wireless_ds4_game_bridge_deactivate_slot(game_pid, bridge_args, s);
+    return 0;
+}
+
+static void
+reset_multi_slot_feed(void)
+{
+    g_multi_fed_mask = 0;
+    for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s)
+        g_multi_unfed_frames[s] = 0;
+}
 static pid_t g_reader_pid = -1;
 static intptr_t g_reader_args;
 /* Foreground user the current reader was started with. The reader's candidate
@@ -1162,7 +1193,6 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
                             const PoorDS4GameBridgeStatus *bridge_status,
                             const ScePadData *primary_pad)
 {
-    static int s_prev_fed_mask = 0;
     int current_fed_mask = 0;
     /* The primary_pad mirroring fallback was removed: every secondary slot is
      * now fed only from its own reader data. primary_pad is retained for
@@ -1264,9 +1294,12 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
         if (reader_slot < 0) {
             /* No reader slot holds this game user, so there is no data for it:
              * never feed another player's controller into this slot. */
-            if (s_prev_fed_mask & (1 << s))
-                (void)wireless_ds4_game_bridge_deactivate_slot(
-                    game_pid, bridge_args, s);
+            if (g_multi_fed_mask & (1 << s)) {
+                if (live_dualsense_slot >= 0 && (int)s == live_dualsense_slot)
+                    g_multi_unfed_frames[s] = 0;
+                else if (hold_fed_slot(game_pid, bridge_args, s))
+                    current_fed_mask |= (1 << s);
+            }
             continue;
         }
         used_reader_mask |= 1u << (unsigned)reader_slot;
@@ -1278,24 +1311,27 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
                     reader_pid, reader_args, (uint32_t)reader_slot,
                     &physical_pad, sizeof(physical_pad), &slot_seq) == 0 &&
                 physical_pad.connected != 0) {
+                g_multi_unfed_frames[s] = 0;
                 current_fed_mask |= (1 << s);
                 (void)wireless_ds4_game_bridge_update_slot(
                     game_pid, bridge_args, s, &physical_pad, sizeof(physical_pad),
                     0 /* is_simulated */, 0 /* is_dualsense */);
-            } else if (s_prev_fed_mask & (1 << s)) {
-                /* A slot that currently holds the native DualSense must never be
-                 * deactivated: deactivate_slot() clears the is_dualsense flag
-                 * that keeps the game-side passthrough in place. */
-                if (live_dualsense_slot >= 0 && (int)s == live_dualsense_slot)
-                    continue;
-                (void)wireless_ds4_game_bridge_deactivate_slot(game_pid, bridge_args, s);
+            } else if (g_multi_fed_mask & (1 << s)) {
+                if (live_dualsense_slot >= 0 && (int)s == live_dualsense_slot) {
+                    /* Never deactivate the native DualSense slot:
+                     * deactivate_slot() clears the is_dualsense flag the
+                     * game-side passthrough depends on. */
+                    g_multi_unfed_frames[s] = 0;
+                } else if (hold_fed_slot(game_pid, bridge_args, s)) {
+                    current_fed_mask |= (1 << s);
+                }
             }
         }
     }
     {
-        uint32_t newly_fed = current_fed_mask & ~s_prev_fed_mask;
-        uint32_t newly_unfed = s_prev_fed_mask & ~current_fed_mask;
-        if (s_prev_fed_mask != 0u &&
+        uint32_t newly_fed = current_fed_mask & ~g_multi_fed_mask;
+        uint32_t newly_unfed = g_multi_fed_mask & ~current_fed_mask;
+        if (g_multi_fed_mask != 0u &&
             ((newly_fed | newly_unfed) & ~1u) != 0u) {
             unsigned fed = 0;
             for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s)
@@ -1307,22 +1343,7 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
             announce_ds4_count("wireless DS4 now bridged", "", (int32_t)fed);
         }
     }
-    {
-        uint32_t newly_fed = current_fed_mask & ~s_prev_fed_mask;
-        uint32_t newly_unfed = s_prev_fed_mask & ~current_fed_mask;
-        if (s_prev_fed_mask != 0u &&
-            ((newly_fed | newly_unfed) & ~1u) != 0u) {
-            unsigned fed = 0;
-            for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s)
-                if (current_fed_mask & (1u << s))
-                    fed++;
-            poords4_log(
-                "[PoorDS4] automatic discovery: fed mask=0x%08x now "
-                "slot mask=0x%08x\n", newly_fed, current_fed_mask);
-            announce_ds4_count("wireless DS4 now bridged", "", (int32_t)fed);
-        }
-    }
-    s_prev_fed_mask = current_fed_mask;
+    g_multi_fed_mask = current_fed_mask;
 }
 
 static unsigned
@@ -1332,6 +1353,20 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
                  unsigned long long previous_output_frames,
                  GameSessionEndReason *out_end_reason)
 {
+    /* A bridged title already has its controllers: the in-target discovery
+     * polling is stopped for as long as the session runs. Re-probing every
+     * candidate user gains nothing once the game is fed, and it keeps opening
+     * and closing pads on users that can never take a reader slot (the owner of
+     * a natively connected DualSense). The supervisor resumes it at session end. */
+    reset_multi_slot_feed();
+    int rescan_pause_result = -1;
+    if (reader_pid > 0 && reader_args != 0)
+        rescan_pause_result = wireless_ds4_remote_reader_pause_rescan(
+            reader_pid, reader_args, 1);
+    POORDS4_LOG_DEBUG(
+        "[PoorDS4] automatic discovery paused for this session result=%d\n",
+        rescan_pause_result);
+
     unsigned input_frames = 0;
     unsigned output_frames = 0;
     unsigned stale_frames = 0;
@@ -1905,6 +1940,11 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
         game_pid, &last_bridge_status, &last_reader_status, &g_pad_source,
         input_frames, output_frames, stale_frames, activity_frames,
         end_reason, session_start_ms, monotonic_milliseconds());
+    /* Back to the pre-game discovery: the next launch may need a controller
+     * that appears while the console waits. */
+    if (reader_pid > 0 && reader_args != 0)
+        (void)wireless_ds4_remote_reader_pause_rescan(
+            reader_pid, reader_args, 0);
     g_bridge_args = 0;
     if (out_end_reason)
         *out_end_reason = end_reason;

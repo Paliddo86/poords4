@@ -83,6 +83,12 @@ once. A title that registers its users out of the order in which RemotePlay
 enumerates the controllers therefore cannot receive one player's input on
 another player's slot.
 
+The in-target automatic discovery is paused for as long as a session is bridged
+(`RemotePadReaderArgs.rescan_paused`): once the title has its controllers,
+re-probing the candidate users has nothing left to find and would keep opening
+pads on users that can never take a reader slot. It is resumed when the session
+ends, before the console waits for the next launch.
+
 ## Cleanup and recovery
 
 Normal cleanup first disables publication, proves every import still points to
