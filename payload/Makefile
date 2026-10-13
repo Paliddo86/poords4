@@ -1,8 +1,16 @@
 PS5_HOST ?=
 PORT     ?= 9021
 PWSH     ?= pwsh
-VERSION      := 1.0.0
-VERSION_CODE := 100
+# Build identity. VERSION follows SemVer; the "-beta.N" suffix marks an
+# incremental development build of the unreleased changes (CI classifies a
+# *-beta* tag as a prerelease and never as the repository "latest").
+# VERSION_CODE is the numeric code written to the startup banner and to the
+# report field poords4_rc. Raise BETA for every new beta of the same change set,
+# either here or on the command line:
+#   make -C payload BETA=2 release
+BETA         ?= 1
+VERSION      := 1.1.0-beta.$(BETA)
+VERSION_CODE := 101
 
 TARGET        := PoorDS4-v$(VERSION).elf
 STATUS_TARGET := PoorDS4-status.elf

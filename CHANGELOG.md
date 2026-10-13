@@ -4,6 +4,80 @@ All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; `1.0.0` is the first stable release, earlier wireless
 bridge candidates used `0.1.0-rcN`.
 
+## [1.1.0-beta.2] - 2026-10-13
+
+### Fixed
+
+- **The reader data is routed by user id instead of by slot position.** A title
+  creates its per-user pad-client entries in its own order, which is not the
+  order in which RemotePlay enumerates the same controllers, and the supervisor
+  fed reader slot `s` into game slot `s`. With one DualSense and three DS4 the
+  two orders differ as soon as a title registers a user out of sequence: the
+  captured session showed the game slots `[483 DualSense, 485, 484, 486]` while
+  the reader slots were `[484 source, 484, 485, 486]`, so player 484's
+  controller was written into player 485's slot (two controllers for the same
+  person in game) while player 485's real controller was never fed - the popups
+  of that session reported "3 controller active" and then only "2 controller
+  bridged". The supervisor now stores the game-side user id of every
+  client-table entry at install time (`GamePadBridgeSlot.reserved[1]`, surfaced
+  as `game_user_id`), matches it against the user id bound to each reader slot
+  (`PoorDS4RemoteReaderStatus.slot_users`), consumes each reader slot at most
+  once, and never feeds a slot whose user has no reader data. Unknown layouts (a
+  legacy bridge block without user ids) keep the previous positional mapping, and
+  every routing change is logged once as
+  `slot routing: game_user=0x...,0x...,0x...,0x... reader_user=0x...,...`.
+
+## [1.1.0-beta.1] - 2026-10-13
+
+Incremental beta build of the DualSense continuity diagnostics and of the live
+native-slot protection, on top of the 1.0.0 release. The artifact is
+`PoorDS4-v1.1.0-beta.1.elf`, the startup banner logs `version=1.1.0-beta.1`,
+and the report field `poords4_rc` is `101`. Raise `BETA` in `payload/Makefile`
+(or pass `BETA=<n>` on the command line) for the next beta of this change set.
+
+### Fixed
+
+- **The native DualSense game slot is re-evaluated while the session runs.** The
+  slot that holds a natively connected DualSense was decided once, from the
+  client-table scan taken during the install, and that decision protected the
+  slot from the RemotePlay feed for the whole session. A controller that was
+  momentarily `connected=0` while the scan was taken left the flag clear, so the
+  DualSense game slot could be fed RemotePlay data and the game-side passthrough
+  for that handle was replaced by a translated DS4 frame. The feed now
+  re-derives the protected slot from the live bridge status (refreshed several
+  times per second) on every iteration, logs the re-evaluation once, and never
+  deactivates that slot, because `wireless_ds4_game_bridge_deactivate_slot()`
+  clears the `is_dualsense` flag the passthrough depends on.
+
+### Added
+
+- **DualSense continuity telemetry**: the native passthrough now counts the
+  frames in which the system itself reports the DualSense as disconnected
+  (`native_disconnect_frames`) and how many of those were a new
+  connected -> disconnected episode (`native_disconnect_events`), plus the last
+  observed connection state (`native_disconnect_state`). The supervisor logs
+  `native DualSense disconnect episode: ... input_frame=N` as soon as a new
+  episode appears, so the moment a title could announce "controller
+  disconnected" is recorded with its frame index. Raw counters are appended to
+  `GamePadBridgeArgs` after the slot array
+  (`sizeof(GamePadBridgeArgs) == 5968 -> 5992`), so every earlier offset stays
+  byte-for-byte identical for stale-bridge inspection, and they are reported by
+  the `status` payload, the periodic health line and the session summary.
+- **Automatic-discovery probe telemetry**: the in-target rescan records how many
+  candidate users it opened a pad for (`rescan_probes`), how many of those
+  carried no DS4 identity and are therefore re-probed on every round
+  (`rescan_non_ds4`, with the affected user id in
+  `rescan_last_non_ds4_user`), and how many rounds ran (`rescan_count`). The
+  reader arguments and the status report grew accordingly
+  (`sizeof(RemotePadReaderArgs) == 1928 -> 1944`). A user whose pad opens but
+  never reports a DS4 - the owner of a natively connected DualSense, or a stale
+  RemotePlay client entry - can never take a reader slot, so this is the only
+  place where the recurring `scePadSetLoginUserNumber()` +
+  `scePadOpen()`/`scePadClose()` cycle performed on that user's context becomes
+  visible. `scePadIsDS4Connected()` cannot answer that question in RemotePlay's
+  own client: it returns 0 for every user, including the ones whose DS4 the
+  bridge reads successfully.
+
 ## [1.0.0] - 2026-10-10
 
 First stable release. A DS4 paired to any logged-in profile is detected,

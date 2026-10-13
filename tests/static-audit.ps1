@@ -16,10 +16,10 @@ $bridge = [IO.File]::ReadAllText(
 $makefile = [IO.File]::ReadAllText(
     (Join-Path $repo 'payload/Makefile'))
 
-Assert-True ($makefile.Contains('VERSION      := 1.0.0')) `
-    'Makefile release version is not 1.0.0.'
-Assert-True ($makefile.Contains('VERSION_CODE := 100')) `
-    'Makefile release version code is not 100.'
+Assert-True ($makefile.Contains('VERSION      := 1.1.0-beta.$(BETA)')) `
+    'Makefile build version is not the 1.1.0-beta beta line.'
+Assert-True ($makefile.Contains('VERSION_CODE := 101')) `
+    'Makefile build version code is not 101.'
 Assert-True ($makefile.Contains('-DPOORDS4_VERSION_STR')) `
     'Bridge build does not pass the release version string.'
 Assert-True (-not $makefile.Contains('-lScePad')) `

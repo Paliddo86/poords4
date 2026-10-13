@@ -5,6 +5,7 @@
 #include <sys/types.h>
 
 #define POORDS4_MAX_USER_CANDIDATES 8u
+#define POORDS4_MAX_SLOTS 4u
 
 typedef struct {
     int32_t user_id;
@@ -80,13 +81,22 @@ typedef struct {
     /* Consecutive rescans that saw a connected DS4 the reader cannot read. The
      * supervisor rebuilds the reader when this reaches 2. */
     uint32_t rescan_stuck;
+    /* Probe telemetry of the last automatic-discovery round: candidate users a
+     * pad was opened for, how many of those carried no DS4 identity, and which
+     * user that was. */
+    uint32_t rescan_probes;
+    uint32_t rescan_non_ds4;
+    int32_t  rescan_last_non_ds4_user;
+    uint32_t rescan_count;
+    /* User id bound to each reader slot (0xffffffff when the slot is free). The
+     * supervisor matches these against the game client-table user ids to route
+     * every controller to its own game slot. */
+    int32_t  slot_users[POORDS4_MAX_SLOTS];
 } PoorDS4RemoteReaderStatus;
 
 int wireless_ds4_remote_reader_status(
     pid_t pid, intptr_t args_address,
     PoorDS4RemoteReaderStatus *out_status);
-
-#define POORDS4_MAX_SLOTS 4u
 
 int wireless_ds4_game_bridge_install(
     const PoorDS4PadSource *source, pid_t *out_game_pid,
@@ -157,6 +167,12 @@ typedef struct {
     uint8_t  connected;
     uint8_t  user_matches;
     uint8_t  reserved[2];
+    /* Game-side user id of this client-table entry, captured from the pad
+     * client table at install time (0xffffffff when unknown). The supervisor
+     * routes the reader data by this id instead of by slot position, because
+     * the order in which a title creates its per-user pad entries is not the
+     * order in which RemotePlay enumerates the same controllers. */
+    int32_t  game_user_id;
 } PoorDS4SlotStatus;
 
 typedef struct {
@@ -195,6 +211,13 @@ typedef struct {
     uint8_t last_native_r2;
     uint8_t last_native_connected;
     uint8_t last_native_count;
+    /* DualSense native-path continuity: frames the system reported the native
+     * DualSense as disconnected, and how many of those were a new
+     * connected->disconnected transition. */
+    uint64_t native_disconnect_frames;
+    uint64_t native_disconnect_events;
+    uint8_t native_disconnect_state;
+    uint8_t reserved_native[7];
     uint32_t import_hook_count;
     int32_t game_pad_index;
     uint32_t buttons;

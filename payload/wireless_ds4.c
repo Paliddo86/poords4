@@ -717,11 +717,20 @@ typedef struct {
     int32_t  slot_users[POORDS4_MAX_SLOTS];
     uint8_t  rescan_pad[POORDS4_REMOTE_PAD_CAPACITY];
     uint8_t  rescan_info[64];
+    /* Automatic-discovery probe telemetry for the last round: how many candidate
+     * users the rescan opened a pad for, how many of those were rejected because
+     * no DS4 identity could be read from them, and which user that was. A
+     * candidate that can never be identified (a native DualSense, or a stale
+     * RemotePlay client entry) is re-probed on every round by design, so these
+     * counters make the recurring touch of that user's context visible. */
+    volatile uint32_t rescan_probes;
+    volatile uint32_t rescan_non_ds4;
+    volatile int32_t  rescan_last_non_ds4_user;
 } RemotePadReaderArgs;
 
 _Static_assert(sizeof(ScePadData) == 120,
                "ScePadData ABI changed");
-_Static_assert(sizeof(RemotePadReaderArgs) == 1928,
+_Static_assert(sizeof(RemotePadReaderArgs) == 1944,
                "RemotePadReaderArgs ABI changed");
 
 extern void *remote_pad_reader_stub(void *arg);
@@ -938,6 +947,8 @@ remote_pad_reader_rescan(RemotePadReaderArgs *a)
         return;
 
     a->rescan_count = a->rescan_count + 1u;
+    a->rescan_probes = 0u;
+    a->rescan_non_ds4 = 0u;
     int stuck_seen = 0;
     for (int32_t candidate = 0; candidate < a->candidate_count; ++candidate) {
         int32_t user = a->candidate_users[candidate];
@@ -967,6 +978,7 @@ remote_pad_reader_rescan(RemotePadReaderArgs *a)
         }
         if (handle < 0)
             continue;
+        a->rescan_probes = a->rescan_probes + 1u;
         int32_t device_id = -1;
         int32_t device_call = get_device_id(handle, &device_id);
         int32_t info_call = -1;
@@ -997,6 +1009,12 @@ remote_pad_reader_rescan(RemotePadReaderArgs *a)
              * the reader. A native DualSense is not reported by this query. */
             if (is_ds4_user && is_ds4_user(user) > 0)
                 stuck_seen = 1;
+            /* A user whose pad opens but never carries a DS4 identity (the
+             * native DualSense owner, or a stale RemotePlay entry) stays
+             * slot-less by design, so it is probed again on every round. Record
+             * it so the supervisor can see which user is being re-touched. */
+            a->rescan_non_ds4 = a->rescan_non_ds4 + 1u;
+            a->rescan_last_non_ds4_user = user;
             if (close_pad)
                 (void)close_pad(handle);
             continue;
@@ -1178,11 +1196,21 @@ typedef struct {
     volatile uint32_t event_ring_head;
     PoorDS4InputEvent event_ring[POORDS4_GAME_BRIDGE_EVENT_RING_SIZE];
     GamePadBridgeSlot slots[POORDS4_MAX_SLOTS];
+    /* DualSense native-path continuity diagnostics. Appended after the slot
+     * array so every earlier offset stays byte-for-byte identical and a stale
+     * bridge can still be inspected and recovered. The counters belong to the
+     * native passthrough only: native_disconnect_frames counts the frames in
+     * which the native read of a DualSense slot returned connected=0, i.e. the
+     * moments in which the system itself reported that controller as gone. */
+    volatile uint64_t native_disconnect_frames;
+    volatile uint64_t native_disconnect_events;
+    volatile uint8_t  native_disconnect_state;
+    uint8_t  native_disconnect_pad[7];
 } GamePadBridgeArgs;
 
 _Static_assert(offsetof(GamePadBridgeArgs, legacy_fp_setsockopt) == 496,
                "PoorDS4 bridge ABI v1 prefix changed");
-_Static_assert(sizeof(GamePadBridgeArgs) == 5968,
+_Static_assert(sizeof(GamePadBridgeArgs) == 5992,
                "GamePadBridgeArgs ABI changed");
 
 static pid_t g_game_bridge_direct_pid = -1;
@@ -1470,6 +1498,31 @@ game_bridge_record_native(GamePadBridgeArgs *args, void *out)
                      __ATOMIC_RELAXED);
 }
 
+/*
+ * Native DualSense continuity watchdog. Called only from the is_dualsense
+ * branches, where "out" always carries the untouched Sony result, so the
+ * connected bit it holds is the system's own view of the DualSense. Counts both
+ * the disconnected frames and the connected->disconnected transitions so a
+ * controller that momentarily drops out is visible after the fact without any
+ * per-frame logging in the target.
+ */
+static __attribute__((always_inline)) inline void
+game_bridge_record_native_connection(GamePadBridgeArgs *args, void *out)
+{
+    int connected = game_bridge_native_connected(out);
+    int previous = __atomic_load_n(
+        &args->native_disconnect_state, __ATOMIC_RELAXED) != 0;
+    if (!connected) {
+        (void)__atomic_fetch_add(
+            &args->native_disconnect_frames, 1, __ATOMIC_RELAXED);
+        if (previous)
+            (void)__atomic_fetch_add(
+                &args->native_disconnect_events, 1, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(
+        &args->native_disconnect_state, connected ? 0u : 1u, __ATOMIC_RELAXED);
+}
+
 static __attribute__((always_inline)) inline int
 game_bridge_is_reset_combo_held(uint32_t buttons, uint8_t l2, uint8_t r2)
 {
@@ -1627,6 +1680,7 @@ game_pad_read_state_stub(int32_t handle, void *out,
                 &args->last_native_result, native_result, __ATOMIC_RELAXED);
             if (native_called && native_result == 0) {
                 game_bridge_record_native(args, out);
+                game_bridge_record_native_connection(args, out);
                 (void)__atomic_fetch_add(
                     &args->slots[slot].native_passthrough_frames, 1, __ATOMIC_RELAXED);
                 (void)__atomic_fetch_add(
@@ -1746,6 +1800,7 @@ game_pad_read_state_ext_stub(int32_t handle, void *out,
                 &args->last_native_result, native_result, __ATOMIC_RELAXED);
             if (native_called && native_result == 0) {
                 game_bridge_record_native(args, out);
+                game_bridge_record_native_connection(args, out);
                 (void)__atomic_fetch_add(
                     &args->slots[slot].native_passthrough_frames, 1, __ATOMIC_RELAXED);
                 (void)__atomic_fetch_add(
@@ -1865,6 +1920,7 @@ game_pad_read_stub(int32_t handle, void *out, int32_t num,
                 &args->last_native_result, native_result, __ATOMIC_RELAXED);
             if (native_called && native_result > 0) {
                 game_bridge_record_native(args, out);
+                game_bridge_record_native_connection(args, out);
                 (void)__atomic_fetch_add(
                     &args->slots[slot].native_passthrough_frames, 1, __ATOMIC_RELAXED);
                 (void)__atomic_fetch_add(
@@ -2011,6 +2067,7 @@ game_pad_read_ext_stub(int32_t handle, void *out, int32_t num,
                 &args->last_native_result, native_result, __ATOMIC_RELAXED);
             if (native_called && native_result > 0) {
                 game_bridge_record_native(args, out);
+                game_bridge_record_native_connection(args, out);
                 (void)__atomic_fetch_add(
                     &args->slots[slot].native_passthrough_frames, 1, __ATOMIC_RELAXED);
                 (void)__atomic_fetch_add(
@@ -2157,6 +2214,7 @@ game_pad_get_data_internal_stub(int32_t handle, void *out,
                 &args->last_native_result, native_result, __ATOMIC_RELAXED);
             if (native_called && native_result == 0) {
                 game_bridge_record_native(args, out);
+                game_bridge_record_native_connection(args, out);
                 (void)__atomic_fetch_add(
                     &args->slots[slot].native_passthrough_frames, 1, __ATOMIC_RELAXED);
                 (void)__atomic_fetch_add(
@@ -3959,6 +4017,12 @@ wireless_ds4_remote_reader_status(
     out_status->read_error_frames = snapshot.read_error_frames;
     out_status->state_fallback_frames = snapshot.state_fallback_frames;
     out_status->rescan_stuck = snapshot.rescan_stuck;
+    out_status->rescan_probes = snapshot.rescan_probes;
+    out_status->rescan_non_ds4 = snapshot.rescan_non_ds4;
+    out_status->rescan_last_non_ds4_user = snapshot.rescan_last_non_ds4_user;
+    out_status->rescan_count = snapshot.rescan_count;
+    for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s)
+        out_status->slot_users[s] = snapshot.slot_users[s];
     out_status->reader_mode = snapshot.reader_mode;
     {
         const ScePadData *pad =
@@ -5273,7 +5337,7 @@ game_bridge_select_pad_handle(
     int32_t source_user_id, int32_t source_pad_index, int report_fd,
     int32_t *out_handle, int32_t *out_index,
     int32_t *out_slot_handles, uint32_t *out_slot_dualsense,
-    uint32_t *out_slot_user_matches)
+    uint32_t *out_slot_user_matches, int32_t *out_slot_user_ids)
 {
     if (target <= 0 || libpad_base <= 0 || read_state <= 0 ||
         source_user_id < 0 || source_pad_index < 0 ||
@@ -5290,6 +5354,8 @@ game_bridge_select_pad_handle(
                 out_slot_dualsense[s] = 0;
             if (out_slot_user_matches)
                 out_slot_user_matches[s] = 0;
+            if (out_slot_user_ids)
+                out_slot_user_ids[s] = -1;
         }
     }
     GameBridgeDynlibObjectPrefix object;
@@ -5433,6 +5499,8 @@ game_bridge_select_pad_handle(
                     out_slot_dualsense[inferred_index] = is_active_dualsense ? 1u : 0u;
                 if (out_slot_user_matches)
                     out_slot_user_matches[inferred_index] = matches_user ? 1u : 0u;
+                if (out_slot_user_ids)
+                    out_slot_user_ids[inferred_index] = user_id;
             } else if (is_active_dualsense &&
                        out_slot_dualsense &&
                        !out_slot_dualsense[inferred_index]) {
@@ -5450,6 +5518,8 @@ game_bridge_select_pad_handle(
                 out_slot_dualsense[inferred_index] = 1u;
                 if (out_slot_user_matches)
                     out_slot_user_matches[inferred_index] = matches_user ? 1u : 0u;
+                if (out_slot_user_ids)
+                    out_slot_user_ids[inferred_index] = user_id;
             } else if (!is_active_dualsense &&
                        out_slot_dualsense &&
                        out_slot_dualsense[inferred_index]) {
@@ -5976,11 +6046,13 @@ wireless_ds4_game_bridge_run_passive(
     int32_t slot_handles[POORDS4_MAX_SLOTS] = {-1, -1, -1, -1};
     uint32_t slot_dualsense[POORDS4_MAX_SLOTS] = {0, 0, 0, 0};
     uint32_t slot_user_matches[POORDS4_MAX_SLOTS] = {0, 0, 0, 0};
+    int32_t slot_user_ids[POORDS4_MAX_SLOTS] = {-1, -1, -1, -1};
     if (game_bridge_select_pad_handle(
             target, base, originals[0], source->user_id,
             source->pad_index,
             report_fd, &game_pad_handle, &game_pad_index,
-            slot_handles, slot_dualsense, slot_user_matches) != 0) {
+            slot_handles, slot_dualsense, slot_user_matches,
+            slot_user_ids) != 0) {
         report_printf(report_fd, "state=waiting_for_game_pad_handle\n");
         result = -4;
         goto done;
@@ -6141,11 +6213,18 @@ wireless_ds4_game_bridge_run_passive(
             args.slots[i].pad_index = (int32_t)i;
             args.slots[i].is_dualsense = slot_dualsense[i] ? 1u : 0u;
             args.slots[i].reserved[0] = slot_user_matches[i] ? 1u : 0u;
+            /* Game-side user of this entry: the supervisor routes the reader
+             * data by user id, never by slot position. */
+            args.slots[i].reserved[1] =
+                slot_user_ids[i] > 0 ? (uint32_t)slot_user_ids[i]
+                                     : UINT32_C(0xffffffff);
         } else {
             args.slots[i].pad_handle = -1;
             args.slots[i].pad_index = -1;
             args.slots[i].is_dualsense = 0;
             args.slots[i].reserved[0] = 0;
+            args.slots[i].reserved[1] = UINT32_C(0xffffffff);
+            args.slots[i].reserved[2] = 0;
         }
         args.slots[i].active = 0;
         args.slots[i].is_simulated = 0;
@@ -6624,6 +6703,9 @@ wireless_ds4_game_bridge_status(pid_t game_pid, intptr_t args_kaddr,
     out_status->last_native_r2 = args.last_native_r2;
     out_status->last_native_connected = args.last_native_connected;
     out_status->last_native_count = args.last_native_count;
+    out_status->native_disconnect_frames = args.native_disconnect_frames;
+    out_status->native_disconnect_events = args.native_disconnect_events;
+    out_status->native_disconnect_state = args.native_disconnect_state;
     out_status->import_hook_count = args.import_hook_count;
     out_status->game_pad_index = (int32_t)args.reserved0;
     out_status->buttons = pad.buttons;
@@ -6651,6 +6733,7 @@ wireless_ds4_game_bridge_status(pid_t game_pid, intptr_t args_kaddr,
         out_status->slots[s].is_dualsense = args.slots[s].is_dualsense;
         out_status->slots[s].is_simulated = args.slots[s].is_simulated;
         out_status->slots[s].user_matches = (uint8_t)(args.slots[s].reserved[0] & 0xff);
+        out_status->slots[s].game_user_id = (int32_t)args.slots[s].reserved[1];
         out_status->slots[s].seq = args.slots[s].direct_seq;
         out_status->slots[s].packets = args.slots[s].direct_packets;
         out_status->slots[s].read_state_calls = args.slots[s].read_state_calls;

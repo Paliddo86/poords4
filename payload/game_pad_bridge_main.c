@@ -58,6 +58,10 @@ extern int sceKernelGetAppInfo(pid_t pid, app_info_t *info);
 static time_t g_last_supervisor_write;
 static int g_supervisor_lock_fd = -1;
 static PoorDS4PadSource g_pad_source = {-1, -1, -1, 0, 0};
+/* Reader slot -> user id routing table, refreshed with the reader status
+ * snapshot (copying the whole reader argument block on every frame would be far
+ * too expensive). -1 marks a slot that is free or not yet known. */
+static int32_t g_reader_slot_users[POORDS4_MAX_SLOTS] = {-1, -1, -1, -1};
 static pid_t g_reader_pid = -1;
 static intptr_t g_reader_args;
 /* Foreground user the current reader was started with. The reader's candidate
@@ -788,6 +792,7 @@ event_stub_name(uint8_t stub_kind)
 static void
 write_game_session_summary(
     pid_t game_pid, const PoorDS4GameBridgeStatus *status,
+    const PoorDS4RemoteReaderStatus *reader,
     const PoorDS4PadSource *source,
     unsigned input_frames, unsigned output_frames,
     unsigned stale_frames, unsigned activity_frames,
@@ -911,9 +916,25 @@ write_game_session_summary(
                 (unsigned long long)status->native_backing_errors);
         fprintf(f, "  Native Passthrough:       %llu frames\n", (unsigned long long)status->native_passthrough_frames);
         fprintf(f, "  Native Connected Frames:  %llu\n", (unsigned long long)status->native_connected_frames);
+        fprintf(f, "  DualSense Disconnects:    %llu frames (%llu episodes)\n",
+                (unsigned long long)status->native_disconnect_frames,
+                (unsigned long long)status->native_disconnect_events);
         fprintf(f, "  Native Input Activity:    %llu frames\n", (unsigned long long)status->native_input_activity_frames);
         fprintf(f, "  Last Native Result:       0x%08x\n", (uint32_t)status->last_native_result);
         fprintf(f, "\n");
+
+        if (reader) {
+            fprintf(f, "--------------------------------------------------------------------------------\n");
+            fprintf(f, "Automatic Discovery (in-target rescan):\n");
+            fprintf(f, "--------------------------------------------------------------------------------\n");
+            fprintf(f, "  Rescan Rounds:            %u\n", reader->rescan_count);
+            fprintf(f, "  Pads Opened Last Round:   %u\n", reader->rescan_probes);
+            fprintf(f, "  Non-DS4 Probes:           %u (last user: 0x%08x)\n",
+                    reader->rescan_non_ds4,
+                    (uint32_t)reader->rescan_last_non_ds4_user);
+            fprintf(f, "  Stuck Rounds:             %u\n", reader->rescan_stuck);
+            fprintf(f, "\n");
+        }
 
         fprintf(f, "--------------------------------------------------------------------------------\n");
         fprintf(f, "Input Event Ring Buffer (Last 64 Events Chronological):\n");
@@ -1097,6 +1118,43 @@ reader_refresh_due(const PoorDS4RemoteReaderStatus *status)
 }
 
 static void
+log_slot_routing(const PoorDS4GameBridgeStatus *status, int dualsense_slot,
+                 unsigned primary_slot)
+{
+    if (!status)
+        return;
+    static int32_t s_game_users[POORDS4_MAX_SLOTS] = {-2, -2, -2, -2};
+    static int32_t s_reader_users[POORDS4_MAX_SLOTS] = {-2, -2, -2, -2};
+    int changed = 0;
+    for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
+        if (s_game_users[s] != status->slots[s].game_user_id ||
+            s_reader_users[s] != g_reader_slot_users[s])
+            changed = 1;
+    }
+    if (!changed)
+        return;
+    for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
+        s_game_users[s] = status->slots[s].game_user_id;
+        s_reader_users[s] = g_reader_slot_users[s];
+    }
+    /* One line per routing change: it records which controller the bridge could
+     * see (reader_user) and which game user each slot belongs to (game_user), so
+     * a title that assigns its per-user entries in an unexpected order is
+     * visible in the log instead of only in the gameplay. */
+    poords4_log(
+        "[PoorDS4] slot routing: game_user=0x%08x,0x%08x,0x%08x,0x%08x "
+        "reader_user=0x%08x,0x%08x,0x%08x,0x%08x primary_slot=%u "
+        "dualsense_slot=%d\n",
+        (uint32_t)status->slots[0].game_user_id,
+        (uint32_t)status->slots[1].game_user_id,
+        (uint32_t)status->slots[2].game_user_id,
+        (uint32_t)status->slots[3].game_user_id,
+        (uint32_t)g_reader_slot_users[0], (uint32_t)g_reader_slot_users[1],
+        (uint32_t)g_reader_slot_users[2], (uint32_t)g_reader_slot_users[3],
+        primary_slot, dualsense_slot);
+}
+
+static void
 feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
                             pid_t game_pid, intptr_t bridge_args,
                             uint64_t input_frames, unsigned primary_slot,
@@ -1107,19 +1165,66 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
     static int s_prev_fed_mask = 0;
     int current_fed_mask = 0;
     /* The primary_pad mirroring fallback was removed: every secondary slot is
-     * now fed only from its own reader data. These parameters are retained for
-     * signature stability but are no longer referenced here. */
-    (void)bridge_status;
+     * now fed only from its own reader data. primary_pad is retained for
+     * signature stability but is no longer referenced here; bridge_status is
+     * used below to re-derive the protected native DualSense slot. */
     (void)primary_pad;
     refresh_simulated_pads_config();
+
+    /* The install-time client-table scan decides which game slot holds the
+     * natively connected DualSense, and that decision used to be frozen for the
+     * whole session. Re-evaluate it against the live bridge status: the two
+     * flags below are the only thing that keeps the DualSense game slot out of
+     * the RemotePlay feed, so a controller that was momentarily disconnected
+     * while the install snapshot was taken must not leave that slot unprotected
+     * for the rest of the session. */
+    int live_dualsense_slot = dualsense_slot;
+    if (bridge_status) {
+        for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
+            if (bridge_status->slots[s].pad_handle > 0 &&
+                bridge_status->slots[s].is_dualsense) {
+                live_dualsense_slot = (int)s;
+                break;
+            }
+        }
+        static int s_logged_dualsense_slot = -1000; /* slot indices are 0..3 */
+        if (live_dualsense_slot != dualsense_slot &&
+            s_logged_dualsense_slot != live_dualsense_slot) {
+            s_logged_dualsense_slot = live_dualsense_slot;
+            poords4_log(
+                "[PoorDS4] native DualSense slot re-evaluated: "
+                "install=%d live=%d at input_frame=%llu\n",
+                dualsense_slot, live_dualsense_slot,
+                (unsigned long long)input_frames);
+        }
+    }
+
+    /* Route every game slot to the reader slot that holds *its* user. A title
+     * assigns its per-user pad entries in its own order, which is not the order
+     * in which RemotePlay enumerates the same controllers: feeding by position
+     * wrote one controller into another player's slot and silently dropped the
+     * controller whose reader slot collided with the primary or DualSense slot.
+     * The source slot is written by the caller before this loop, so the reader
+     * slot holding the source user is consumed here. */
+    unsigned used_reader_mask = 0;
+    for (unsigned r = 0; r < POORDS4_MAX_SLOTS; ++r) {
+        if (g_pad_source.user_id >= 0 &&
+            g_reader_slot_users[r] == g_pad_source.user_id) {
+            used_reader_mask |= 1u << r;
+            break;
+        }
+    }
+    log_slot_routing(bridge_status, live_dualsense_slot, primary_slot);
 
     uint64_t now_ms = monotonic_milliseconds();
     for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s) {
         if (s == primary_slot)
             continue;
-        if (dualsense_slot >= 0 && (int)s == dualsense_slot)
+        if (live_dualsense_slot >= 0 && (int)s == live_dualsense_slot)
             continue; /* Never touch the native DualSense slot. */
         if (g_sim_mask & (1 << s)) {
+            /* Simulated pads are a debug feature: they carry no reader data, so
+             * they bypass the user routing below. */
             current_fed_mask |= (1 << s);
             ScePadData sim_pad;
             memset(&sim_pad, 0, sizeof(sim_pad));
@@ -1137,12 +1242,40 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
             (void)wireless_ds4_game_bridge_update_slot(
                 game_pid, bridge_args, s, &sim_pad, sizeof(sim_pad),
                 1 /* is_simulated */, 0 /* is_dualsense */);
+            continue;
+        }
+        int32_t game_user = bridge_status
+            ? bridge_status->slots[s].game_user_id : -1;
+        int reader_slot = -1;
+        if (game_user > 0) {
+            for (unsigned r = 0; r < POORDS4_MAX_SLOTS; ++r) {
+                if (used_reader_mask & (1u << r))
+                    continue;
+                if (g_reader_slot_users[r] == game_user) {
+                    reader_slot = (int)r;
+                    break;
+                }
+            }
         } else {
+            /* Unknown game user (a legacy bridge block, or a client-table entry
+             * without a user id): keep the historical positional mapping. */
+            reader_slot = (int)s;
+        }
+        if (reader_slot < 0) {
+            /* No reader slot holds this game user, so there is no data for it:
+             * never feed another player's controller into this slot. */
+            if (s_prev_fed_mask & (1 << s))
+                (void)wireless_ds4_game_bridge_deactivate_slot(
+                    game_pid, bridge_args, s);
+            continue;
+        }
+        used_reader_mask |= 1u << (unsigned)reader_slot;
+        {
             ScePadData physical_pad;
             uint32_t slot_seq = 0;
             if (reader_pid > 0 && reader_args > 0 &&
                 wireless_ds4_remote_reader_read_slot(
-                    reader_pid, reader_args, s,
+                    reader_pid, reader_args, (uint32_t)reader_slot,
                     &physical_pad, sizeof(physical_pad), &slot_seq) == 0 &&
                 physical_pad.connected != 0) {
                 current_fed_mask |= (1 << s);
@@ -1150,8 +1283,28 @@ feed_multi_controller_slots(pid_t reader_pid, intptr_t reader_args,
                     game_pid, bridge_args, s, &physical_pad, sizeof(physical_pad),
                     0 /* is_simulated */, 0 /* is_dualsense */);
             } else if (s_prev_fed_mask & (1 << s)) {
+                /* A slot that currently holds the native DualSense must never be
+                 * deactivated: deactivate_slot() clears the is_dualsense flag
+                 * that keeps the game-side passthrough in place. */
+                if (live_dualsense_slot >= 0 && (int)s == live_dualsense_slot)
+                    continue;
                 (void)wireless_ds4_game_bridge_deactivate_slot(game_pid, bridge_args, s);
             }
+        }
+    }
+    {
+        uint32_t newly_fed = current_fed_mask & ~s_prev_fed_mask;
+        uint32_t newly_unfed = s_prev_fed_mask & ~current_fed_mask;
+        if (s_prev_fed_mask != 0u &&
+            ((newly_fed | newly_unfed) & ~1u) != 0u) {
+            unsigned fed = 0;
+            for (unsigned s = 0; s < POORDS4_MAX_SLOTS; ++s)
+                if (current_fed_mask & (1u << s))
+                    fed++;
+            poords4_log(
+                "[PoorDS4] automatic discovery: fed mask=0x%08x now "
+                "slot mask=0x%08x\n", newly_fed, current_fed_mask);
+            announce_ds4_count("wireless DS4 now bridged", "", (int32_t)fed);
         }
     }
     {
@@ -1504,6 +1657,17 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
                     POORDS4_LOG_DEBUG(
                         "[PoorDS4] reader rescan stuck count=%u\n",
                         reader_watch.rescan_stuck);
+                /* Automatic-discovery probe telemetry: probes is the number of
+                 * candidate users the last rescan opened a pad for, no_ds4 the
+                 * subset that carried no DS4 identity (the native DualSense
+                 * owner, or a stale RemotePlay entry) and is therefore probed
+                 * again on every round. */
+                POORDS4_LOG_DEBUG(
+                    "[PoorDS4] reader rescan rounds=%u probes=%u no_ds4=%u "
+                    "last_no_ds4_user=0x%08x\n",
+                    reader_watch.rescan_count, reader_watch.rescan_probes,
+                    reader_watch.rescan_non_ds4,
+                    (uint32_t)reader_watch.rescan_last_non_ds4_user);
                 if (reader_refresh_due(&reader_watch)) {
                     end_reason = SESSION_END_READER_FAILED;
                     break;
@@ -1612,6 +1776,30 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
                         game_pid, bridge_args, &bridge_status) == 0 &&
                     bridge_status.bridge_ready == 1) {
                     last_bridge_status = bridge_status;
+                    /* A disconnected native DualSense is the one condition the
+                     * game-side passthrough cannot mask: the target counters
+                     * record every such frame and every new episode, so the log
+                     * carries the frame on which the controller was first
+                     * reported gone. */
+                    static uint64_t s_native_disconnect_events = 0;
+                    if (bridge_status.native_disconnect_events !=
+                        s_native_disconnect_events) {
+                        s_native_disconnect_events =
+                            bridge_status.native_disconnect_events;
+                        poords4_log(
+                            "[PoorDS4] native DualSense disconnect episode: "
+                            "episodes=%llu frames=%llu state=%u "
+                            "dualsense_slot=%d game_pad_index=%d "
+                            "input_frame=%llu\n",
+                            (unsigned long long)
+                                bridge_status.native_disconnect_events,
+                            (unsigned long long)
+                                bridge_status.native_disconnect_frames,
+                            bridge_status.native_disconnect_state,
+                            dualsense_slot,
+                            bridge_status.game_pad_index,
+                            (unsigned long long)input_frames);
+                    }
                     if ((loop_count % 120u) == 0)
                         consecutive_bridge_health_failures = 0;
                 } else if ((loop_count % 120u) == 0) {
@@ -1621,8 +1809,11 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
             PoorDS4RemoteReaderStatus reader_status;
             memset(&reader_status, 0, sizeof(reader_status));
             if (wireless_ds4_remote_reader_status(
-                    reader_pid, reader_args, &reader_status) == 0)
+                    reader_pid, reader_args, &reader_status) == 0) {
                 last_reader_status = reader_status;
+                for (unsigned r = 0; r < POORDS4_MAX_SLOTS; ++r)
+                    g_reader_slot_users[r] = reader_status.slot_users[r];
+            }
         }
         if ((loop_count % 120u) == 0) {
             errno = 0;
@@ -1711,7 +1902,7 @@ run_game_session(pid_t reader_pid, intptr_t reader_args,
         game_pid, end_reason, game_session_end_reason_name(end_reason),
         input_frames, output_frames);
     write_game_session_summary(
-        game_pid, &last_bridge_status, &g_pad_source,
+        game_pid, &last_bridge_status, &last_reader_status, &g_pad_source,
         input_frames, output_frames, stale_frames, activity_frames,
         end_reason, session_start_ms, monotonic_milliseconds());
     g_bridge_args = 0;

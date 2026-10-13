@@ -152,6 +152,9 @@ main(void)
         "reader_triggers=%u,%u\n"
         "reader_timestamp=%llu\n"
         "reader_count=%u\n"
+        "reader_rescan_count=%u\nreader_rescan_probes=%u\n"
+        "reader_rescan_non_ds4=%u\nreader_rescan_last_non_ds4_user=0x%08x\n"
+        "reader_slot_users=0x%08x,0x%08x,0x%08x,0x%08x\n"
         "--- bridge telemetry ---\n"
         "bridge_identity_result=%d\nbridge_pid=%d\n"
         "bridge_args=0x%lx\nbridge_snapshot_result=%d\n"
@@ -167,6 +170,9 @@ main(void)
         "bridge_published_packets=%llu\nbridge_direct_fallback_frames=%llu\n"
         "bridge_native_backing_calls=%llu\nbridge_native_backing_errors=%llu\n"
         "bridge_native_passthrough_frames=%llu\nbridge_native_connected_frames=%llu\n"
+        "bridge_native_disconnect_frames=%llu\n"
+        "bridge_native_disconnect_events=%llu\n"
+        "bridge_native_disconnect_state=%u\n"
         "bridge_event_ring_head=%u\n",
         (int)supervisor_length, identity_result, reader_pid,
         (unsigned long)reader_args, reader_result,
@@ -183,6 +189,10 @@ main(void)
         reader.right_x, reader.right_y,
         reader.left_trigger, reader.right_trigger,
         (unsigned long long)reader.timestamp, reader.count,
+        reader.rescan_count, reader.rescan_probes,
+        reader.rescan_non_ds4, (uint32_t)reader.rescan_last_non_ds4_user,
+        (uint32_t)reader.slot_users[0], (uint32_t)reader.slot_users[1],
+        (uint32_t)reader.slot_users[2], (uint32_t)reader.slot_users[3],
         bridge_identity_result, bridge_pid,
         (unsigned long)bridge_args, bridge_result,
         bridge.bridge_ready, bridge.active, bridge.seq,
@@ -205,6 +215,9 @@ main(void)
         (unsigned long long)bridge.native_backing_errors,
         (unsigned long long)bridge.native_passthrough_frames,
         (unsigned long long)bridge.native_connected_frames,
+        (unsigned long long)bridge.native_disconnect_frames,
+        (unsigned long long)bridge.native_disconnect_events,
+        bridge.native_disconnect_state,
         bridge.event_ring_head);
 
     fprintf(f, "--- observed handles ---\n");
@@ -237,8 +250,8 @@ main(void)
         } else {
             role = "Unassigned/Empty";
         }
-        fprintf(f, "slot[%u]: role='%s' active=%u user_matches=%u handle=0x%08x dualsense=%u sim=%u seq=%u pkts=%u calls[state=%llu,read=%llu] fallback_frames=%llu passthrough=%llu\n",
-                s, role, sl->active, sl->user_matches, (uint32_t)sl->pad_handle, sl->is_dualsense, sl->is_simulated,
+        fprintf(f, "slot[%u]: role='%s' active=%u user_matches=%u game_user=0x%08x handle=0x%08x dualsense=%u sim=%u seq=%u pkts=%u calls[state=%llu,read=%llu] fallback_frames=%llu passthrough=%llu\n",
+                s, role, sl->active, sl->user_matches, (uint32_t)sl->game_user_id, (uint32_t)sl->pad_handle, sl->is_dualsense, sl->is_simulated,
                 sl->seq, sl->packets, (unsigned long long)sl->read_state_calls, (unsigned long long)sl->read_calls,
                 (unsigned long long)sl->direct_fallback_frames, (unsigned long long)sl->native_passthrough_frames);
     }

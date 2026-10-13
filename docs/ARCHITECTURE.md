@@ -70,6 +70,19 @@ slots without treating a local index as global. Multiple remaining candidates
 fail closed; a sole connected entry must also match the source identity so a
 native DualSense is never silently taken over.
 
+The protected DualSense slot is re-derived from the live bridge status on every
+feed iteration instead of being frozen to the install-time scan, and it is never
+deactivated, so a controller that was momentarily disconnected while the client
+table was first read cannot leave that slot exposed to the RemotePlay feed for
+the rest of the session.
+
+Reader data is routed by user id, never by slot position: the installer records
+the game-side user of every client-table entry and the supervisor feeds each
+slot from the reader slot holding that user, consuming every reader slot at most
+once. A title that registers its users out of the order in which RemotePlay
+enumerates the controllers therefore cannot receive one player's input on
+another player's slot.
+
 ## Cleanup and recovery
 
 Normal cleanup first disables publication, proves every import still points to
@@ -96,6 +109,14 @@ on. Verbose logging is enabled at runtime by creating
 automatically by `wireless_ds4_log_enable_verbose()` as soon as a session
 fails, so a failing run captures its own context. The per-session report under
 `reports/` always keeps the full telemetry.
+
+Two continuity counters are kept outside the verbose-only diagnostics because
+they answer the two questions a report cannot answer after the fact: how many
+frames the system itself reported the native DualSense as disconnected
+(`native_disconnect_frames` / `native_disconnect_events`, logged as an episode
+with its frame index) and how many candidate users the in-target rescan keeps
+re-opening because they never report a DS4 identity (`rescan_probes` /
+`rescan_non_ds4` / `rescan_last_non_ds4_user`).
 
 Notifications are the kernel "debug" popups sent through
 `sceKernelSendNotificationRequest` (libkernel): a single line of text and no
