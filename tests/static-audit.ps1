@@ -16,12 +16,14 @@ $bridge = [IO.File]::ReadAllText(
 $makefile = [IO.File]::ReadAllText(
     (Join-Path $repo 'payload/Makefile'))
 
-Assert-True ($makefile.Contains('VERSION      := 1.1.0-beta.$(BETA)')) `
-    'Makefile build version is not the 1.1.0-beta beta line.'
-Assert-True ($makefile.Contains('VERSION_CODE := 101')) `
-    'Makefile build version code is not 101.'
-Assert-True ($makefile.Contains('-DPOORDS4_VERSION_STR')) `
-    'Bridge build does not pass the release version string.'
+Assert-True ($makefile.Contains('VERSION      := 1.1.0')) `
+    'Makefile release version is not 1.1.0.'
+Assert-True ($makefile.Contains('VERSION_CODE := 110')) `
+    'Makefile release version code is not 110.'
+Assert-True ($makefile.Contains('BUILD_VERSION := $(VERSION)-beta.$(BETA)')) `
+    'Makefile lost the incremental beta artifact naming.'
+Assert-True ($makefile.Contains('-DPOORDS4_VERSION_STR="$(BUILD_VERSION)"')) `
+    'Bridge build does not pass the build version string.'
 Assert-True (-not $makefile.Contains('-lScePad')) `
     'Build still links libScePad despite using runtime-resolved game exports.'
 Assert-True (-not $makefile.Contains('-lpthread')) `
@@ -43,7 +45,7 @@ Assert-True (-not $makefile.Contains('EXP_TARGET')) `
     'Build still produces the retired experimental artifact.'
 Assert-True ($makefile.Contains('tests/static-audit.ps1')) `
     'The audit target does not run the static audit.'
-Assert-True ($makefile.Contains('TARGET        := PoorDS4-v$(VERSION).elf')) `
+Assert-True ($makefile.Contains('TARGET        := PoorDS4-v$(BUILD_VERSION).elf')) `
     'Automatic payload does not use the PoorDS4 release name.'
 Assert-True ($makefile.Contains('STATUS_TARGET := PoorDS4-status.elf')) `
     'Status payload does not use the PoorDS4 release name.'

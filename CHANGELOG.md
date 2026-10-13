@@ -4,39 +4,20 @@ All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; `1.0.0` is the first stable release, earlier wireless
 bridge candidates used `0.1.0-rcN`.
 
-## [1.1.0-beta.3] - 2026-10-13
+## [1.1.0] - 2026-10-13
 
-### Changed
-
-- **The in-target automatic discovery is paused while a game session is
-  bridged.** Once a title is bridged it already has its controllers, so
-  re-probing the candidate users every ~3 s only opened and closed pads on the
-  users that can never take a reader slot - the owner of a natively connected
-  DualSense above all - while the game was running. The supervisor pauses the
-  rescan when a session starts and resumes it when the session ends, so the
-  pre-game discovery that makes the reset combo unnecessary is unchanged.
-  `wireless_ds4_remote_reader_pause_rescan()` writes the new
-  `RemotePadReaderArgs.rescan_paused` flag, which fits in what used to be tail
-  padding: the reader argument block keeps its 1944-byte size. The flag is
-  reported by the status payload as `reader_rescan_paused`.
+Multi-controller release. Controller data is routed per user instead of per slot,
+the natively connected DualSense keeps its own slot for the whole session, and
+the in-target discovery stops polling once a title is bridged. The diagnostics
+listed under "Added" were validated in the `1.1.0-beta.1` - `1.1.0-beta.3`
+builds. The artifact is `PoorDS4-v1.1.0.elf`, the startup banner logs
+`version=1.1.0`, and the report field `poords4_rc` is `110`. Development builds
+of the next version keep the incremental naming:
+`make -C payload BETA=1 release` produces `PoorDS4-v1.1.0-beta.1.elf`.
 
 ### Fixed
 
-- **The "N controller active - wireless DS4 now bridged" popup was raised
-  twice**: the block that logs `automatic discovery: fed mask=...` and announces
-  the count had been duplicated in the previous build.
-- A brief lost read no longer flips the fed mask: the multi-slot feed holds a
-  slot for up to 30 frames before it deactivates it (the direct lease keeps the
-  game supplied for several hundred frames), so a transient miss can no longer
-  produce a spurious "joined/left" popup pair. The fed mask is also reset at
-  session start instead of being inherited from the previous session, which
-  raised an immediate extra "now bridged" popup at every game launch.
-
-## [1.1.0-beta.2] - 2026-10-13
-
-### Fixed
-
-- **The reader data is routed by user id instead of by slot position.** A title
+- **Reader data is routed by user id instead of by slot position.** A title
   creates its per-user pad-client entries in its own order, which is not the
   order in which RemotePlay enumerates the same controllers, and the supervisor
   fed reader slot `s` into game slot `s`. With one DualSense and three DS4 the
@@ -54,17 +35,15 @@ bridge candidates used `0.1.0-rcN`.
   legacy bridge block without user ids) keep the previous positional mapping, and
   every routing change is logged once as
   `slot routing: game_user=0x...,0x...,0x...,0x... reader_user=0x...,...`.
-
-## [1.1.0-beta.1] - 2026-10-13
-
-Incremental beta build of the DualSense continuity diagnostics and of the live
-native-slot protection, on top of the 1.0.0 release. The artifact is
-`PoorDS4-v1.1.0-beta.1.elf`, the startup banner logs `version=1.1.0-beta.1`,
-and the report field `poords4_rc` is `101`. Raise `BETA` in `payload/Makefile`
-(or pass `BETA=<n>` on the command line) for the next beta of this change set.
-
-### Fixed
-
+- **The "N controller active - wireless DS4 now bridged" popup was raised
+  twice**: the block that logs `automatic discovery: fed mask=...` and announces
+  the count had been duplicated in the previous build.
+- A brief lost read no longer flips the fed mask: the multi-slot feed holds a
+  slot for up to 30 frames before it deactivates it (the direct lease keeps the
+  game supplied for several hundred frames), so a transient miss can no longer
+  produce a spurious "joined/left" popup pair. The fed mask is also reset at
+  session start instead of being inherited from the previous session, which
+  raised an immediate extra "now bridged" popup at every game launch.
 - **The native DualSense game slot is re-evaluated while the session runs.** The
   slot that holds a natively connected DualSense was decided once, from the
   client-table scan taken during the install, and that decision protected the
@@ -76,6 +55,21 @@ and the report field `poords4_rc` is `101`. Raise `BETA` in `payload/Makefile`
   times per second) on every iteration, logs the re-evaluation once, and never
   deactivates that slot, because `wireless_ds4_game_bridge_deactivate_slot()`
   clears the `is_dualsense` flag the passthrough depends on.
+
+### Changed
+
+- **The in-target automatic discovery is paused while a game session is
+  bridged.** Once a title is bridged it already has its controllers, so
+  re-probing the candidate users every ~3 s only opened and closed pads on the
+  users that can never take a reader slot - the owner of a natively connected
+  DualSense above all - while the game was running. The supervisor pauses the
+  rescan when a session starts and resumes it when the session ends, so the
+  pre-game discovery that makes the reset combo unnecessary is unchanged. A
+  controller switched on while a title runs is therefore picked up at the next
+  launch. `wireless_ds4_remote_reader_pause_rescan()` writes the new
+  `RemotePadReaderArgs.rescan_paused` flag, which fits in what used to be tail
+  padding: the reader argument block keeps its 1944-byte size. The flag is
+  reported by the status payload as `reader_rescan_paused`.
 
 ### Added
 

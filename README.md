@@ -18,6 +18,39 @@ This is experimental homebrew that modifies a running game's pad imports.
 Compatibility checks fail closed, but untested firmware and games can still
 crash. Save your gamesave before testing (it broke the save file of a game during very early builds testings, never happened again but there is stil the risk so this is your disclaimer to save your work).
 
+## What's new in 1.1.0
+
+1.1.0 is the multi-controller release. Changes since 1.0.0:
+
+- **Controllers are routed per user, not per slot.** A title assigns its
+  per-user pad entries in its own order, which is not the order RemotePlay
+  enumerates the same controllers. When the two orders differed, one DS4 was fed
+  into another player's slot (two controllers for the same person in game) while
+  a third controller was never fed. Every controller now reaches its own player
+  slot, and a reader slot is never used twice.
+- **The native DualSense slot is protected for the whole session.** The slot that
+  holds a natively connected DualSense is re-derived from the live bridge status
+  (every ~250 ms) instead of being frozen to the install-time scan, and it is
+  never deactivated, so a momentarily disconnected DualSense cannot leave that
+  slot exposed to the DS4 feed.
+- **The in-game discovery polling is paused.** Once a title is bridged the
+  candidate users are no longer re-probed every ~3 s: the recurring
+  `scePadOpen()`/`scePadClose()` on those users had no benefit left and is what
+  the native DualSense path had to share the pad client with. A controller
+  switched on while a title runs is picked up at the next launch, or immediately
+  by holding the reset combo.
+- **Stable controller-count popups.** One popup per real change: the duplicated
+  "now bridged" announcement is gone, the fed-slot mask is reset at session
+  start, and a single dropped read no longer flaps it (a slot is released only
+  after 30 consecutive missed frames).
+- **New diagnostics** for firmware/game reports: `native DualSense disconnect
+  episode: episodes=N frames=M state=S dualsense_slot=..`, `slot routing:
+  game_user=0x...,... reader_user=0x...,...`, the automatic-discovery counters in
+  the status payload and the `DualSense Disconnects` / `Automatic Discovery`
+  blocks in the session summary. The report field `poords4_rc` is `110`.
+
+Every change in detail is in [CHANGELOG.md](CHANGELOG.md).
+
 ## Requirements
 
 - A jailbroken PS5 with a compatible HEN/kstuff environment and ELF loader.
@@ -29,7 +62,7 @@ crash. Save your gamesave before testing (it broke the save file of a game durin
 
 1. **Bluetooth Pairing**: Put your DualShock 4 into pairing mode by holding `SHARE` + `PS Button` together until the lightbar starts double-blinking rapidly. On the PS5, go to `Settings > Accessories > Bluetooth Accessories` and select **DUALSHOCK 4**.
 2. **Controller Profile**: Connect the DS4 to whichever user profile should play (Player 1 or Player 2). If Player 1 is already using a native DualSense, connect the DS4 under Player 2's profile.
-3. **Deploy Payload**: Send `PoorDS4-v1.0.0.elf` to the console's ELF loader (port 9021). The game may already be running or launched afterward.
+3. **Deploy Payload**: Send `PoorDS4-v1.1.0.elf` to the console's ELF loader (port 9021). The game may already be running or launched afterward.
 4. **Play**: Wait for the `wireless DS4 active` notification, then play normally.
 
 Only run one automatic instance. PoorDS4 follows later game launches without reinjection. It performs safe cleanup before rest mode; reinject after waking. Use `PoorDS4-stop.elf` before replacing a running build.
@@ -59,6 +92,12 @@ Only run one automatic instance. PoorDS4 follows later game launches without rei
    target mappings before changing anything.
 6. Redirect only validated pad imports to a game-owned anonymous mapping and
    publish translated frames through a double buffer.
+7. Record the game-side user id of every pad-client entry and route each reader
+   slot to the game slot that holds that user, so a title that registers its
+   users in a different order still receives every controller on its own player
+   slot, never twice and never on another player's.
+8. Pause the in-target discovery polling as soon as the title is bridged and
+   resume it when the session ends.
 
 The game is never ptraced, stopped, or used to run a borrowed thread. No eboot
 or `libScePad` code page is patched, and no game heap, socket, or thread is
@@ -89,6 +128,12 @@ set `PS5_PAYLOAD_SDK`, then build from the repository root:
 make -C payload clean
 make -C payload release
 ```
+
+`VERSION` and `VERSION_CODE` in `payload/Makefile` are the released version and
+its numeric code (startup banner `version=...`, report field `poords4_rc`). To
+build an incremental prerelease of the same version, pass a beta number: `make
+-C payload BETA=1 release` produces `PoorDS4-v1.1.0-beta.1.elf` (a `*-beta*` tag
+is published by CI as a prerelease and never as "latest").
 
 ### Local build on macOS
 
@@ -134,13 +179,14 @@ make -C payload CC=ps5-clang.cmd clean
 make -C payload CC=ps5-clang.cmd release audit
 ```
 
-RC release assets are produced by the GitHub workflow with the latest
-ps5-payload-sdk release (v0.43 at the time of writing; earlier RCs such as
-rc64 used v0.42):
+Release assets are produced by the GitHub workflow with the latest
+ps5-payload-sdk release (v0.43 at the time of writing; earlier builds such as
+rc64 used v0.42). The 1.1.0 assets are `PoorDS4-v1.1.0.elf`,
+`PoorDS4-status.elf`, and `PoorDS4-stop.elf`:
 
 | Output | Purpose |
 | --- | --- |
-| `PoorDS4-v1.0.0.elf` | Automatic wireless DS4 bridge (release 1.0.0) |
+| `PoorDS4-v1.1.0.elf` | Automatic wireless DS4 bridge (release 1.1.0) |
 | `PoorDS4-status.elf` | Read-only bridge status snapshot |
 | `PoorDS4-stop.elf` | Cooperative stop request |
 
@@ -179,7 +225,7 @@ now bridged); every other popup is the same sentence the log carries
 
 ## Multi-Controller Support (Experimental)
 
-PoorDS4 now supports streaming multiple wireless DS4 controllers concurrently (up to 4 controllers as Player 1..Player 4), along with simulated controller channels and native DualSense passthrough. Please note that multi-controller support is currently **experimental** as I haven't done heavy testing with multiple physical DS4s yet because I don't have a reliable second DualShock 4 controller. If you have multiple DS4 controllers, please test them out and let me know how they work!
+PoorDS4 supports streaming multiple wireless DS4 controllers concurrently (up to 4 controllers as Player 1..Player 4), along with simulated controller channels and native DualSense passthrough. Every controller is fed to the game slot whose owning user matches it, so a title that registers its users in a different order still gets one controller per player - the configuration validated in the field with one native DualSense plus three wireless DS4s on four different profiles. Please note that multi-controller support is currently **experimental**: if you have multiple DS4 controllers, test them and open an issue with the whole `/data/poords4/` folder zipped. `game-pad-bridge-summary.txt` and `game-pad-bridge-status.txt` contain the routing table (`game_user` per slot, `reader_user` per reader slot) needed to diagnose a mismatch.
 
 ## Testers Needed
 

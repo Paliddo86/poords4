@@ -1,18 +1,23 @@
 PS5_HOST ?=
 PORT     ?= 9021
 PWSH     ?= pwsh
-# Build identity. VERSION follows SemVer; the "-beta.N" suffix marks an
-# incremental development build of the unreleased changes (CI classifies a
-# *-beta* tag as a prerelease and never as the repository "latest").
-# VERSION_CODE is the numeric code written to the startup banner and to the
-# report field poords4_rc. Raise BETA for every new beta of the same change set,
-# either here or on the command line:
-#   make -C payload BETA=2 release
-BETA         ?= 1
-VERSION      := 1.1.0-beta.$(BETA)
-VERSION_CODE := 101
+# Build identity. VERSION is the released version and VERSION_CODE the numeric
+# code written to the startup banner and to the report field poords4_rc.
+# Development builds of the next version are produced by passing an incremental
+# beta number: the artifact then carries the semver prerelease suffix (CI
+# classifies a *-beta* tag as a prerelease and never as the repository "latest").
+#   make -C payload release          -> PoorDS4-v1.1.0.elf
+#   make -C payload BETA=1 release   -> PoorDS4-v1.1.0-beta.1.elf
+VERSION      := 1.1.0
+VERSION_CODE := 110
+BETA         ?= 0
+ifeq ($(filter 0,$(BETA)),)
+BUILD_VERSION := $(VERSION)-beta.$(BETA)
+else
+BUILD_VERSION := $(VERSION)
+endif
 
-TARGET        := PoorDS4-v$(VERSION).elf
+TARGET        := PoorDS4-v$(BUILD_VERSION).elf
 STATUS_TARGET := PoorDS4-status.elf
 STOP_TARGET   := PoorDS4-stop.elf
 
@@ -40,7 +45,7 @@ all: $(TARGET)
 
 $(TARGET): game_pad_bridge_main.c wireless_ds4.c wireless_ds4.h pad_types.h
 	$(CC) $(CFLAGS) -DPOORDS4_AUTO_WATCH=1 \
-		'-DPOORDS4_VERSION_STR="$(VERSION)"' \
+		'-DPOORDS4_VERSION_STR="$(BUILD_VERSION)"' \
 		-DPOORDS4_VERSION_CODE=$(VERSION_CODE) -o $@ \
 		game_pad_bridge_main.c wireless_ds4.c $(LDFLAGS) $(BRIDGE_LIBS)
 
